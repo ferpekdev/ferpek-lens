@@ -1,4 +1,4 @@
-name: rosetta-server-agent
+name: ferpek
 
 services:
   server:
