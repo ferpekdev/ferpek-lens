@@ -1,0 +1,27 @@
+id: fail2ban.repeated_bans
+
+name: Repeated Fail2ban bans
+
+sources:
+  - fail2ban
+
+match:
+  regex: '.*\[(?P<jail>[^\]]+)\]\s+Ban\s+(?P<ip>[0-9a-fA-F:.]+)\s*$'
+
+group_by:
+  - ip
+  - jail
+
+aggregate:
+  window_seconds: 3600
+  threshold: 3
+  cooldown_seconds: 3600
+
+finding:
+  severity: warning
+  title: Repeated bans from the same IP
+  detail: "{ip} was banned {count} times by jail {jail} during the last hour."
+
+fields:
+  source_ip: "{ip}"
+  jail: "{jail}"

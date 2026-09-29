@@ -1,0 +1,17 @@
+id: postfix
+name: Postfix
+version: 0.1.0
+author: FERPEK
+description: Interpretation of Postfix mail transport logs.
+
+compatibility:
+  server: ">=0.3.0"
+  agent: ">=0.5.0"
+
+sources:
+  - mail-file
+
+origin: official
+category:
+  id: mail
+  label: Mail

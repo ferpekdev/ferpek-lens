@@ -1,0 +1,18 @@
+id: fail2ban
+name: Fail2ban
+version: 0.1.0
+author: FERPEK
+description: Interpretation of Fail2ban bans, unbans and repeated hostile activity.
+
+compatibility:
+  server: ">=0.3.0"
+  agent: ">=0.5.0"
+
+sources:
+  - fail2ban
+
+origin: official
+
+category:
+  id: security
+  label: Security

@@ -1,0 +1,49 @@
+# Runtime data
+/data/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+
+# Node / Vite
+node_modules/
+dist/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+
+# Databases
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+
+# Temporary / backup files
+*.bak
+*.bk
+*.backup
+*.before-*
+*.pre-*
+*~
+
+# Legacy development prototypes / copies
+/agent.prototype/
+/docker-compose.yml.prototype
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

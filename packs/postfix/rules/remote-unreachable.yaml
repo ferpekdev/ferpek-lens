@@ -1,0 +1,34 @@
+id: postfix.remote_unreachable
+
+name: Mail destination unreachable
+
+sources:
+  - mail-file
+
+match:
+  regex: 'connect to (?P<target>[^\[\s]+)\[(?P<ip>[^\]]+)\]:(?P<port>\d+): (?P<reason>Connection timed out|Connection refused|No route to host|Network is unreachable)'
+
+group_by:
+  - target
+  - port
+
+relevant:
+  severity: warning
+  title: Mail destination unreachable
+  detail: "{target}:{port} · {reason}"
+
+aggregate:
+  window_seconds: 300
+  threshold: 5
+  cooldown_seconds: 300
+
+finding:
+  severity: warn
+  title: Repeated mail delivery failure
+  detail: "Postfix failed to connect to {target}:{port} {count} times during the last 5 minutes."
+
+fields:
+  target: "{target}"
+  remote_ip: "{ip}"
+  port: "{port}"
+  reason: "{reason}"

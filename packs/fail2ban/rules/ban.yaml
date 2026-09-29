@@ -1,0 +1,18 @@
+id: fail2ban.ban
+
+name: IP banned by Fail2ban
+
+sources:
+  - fail2ban
+
+match:
+  regex: '.*\[(?P<jail>[^\]]+)\]\s+Ban\s+(?P<ip>[0-9a-fA-F:.]+)\s*$'
+
+relevant:
+  severity: warning
+  title: IP banned by Fail2ban
+  detail: "{ip} was banned by jail {jail}."
+
+fields:
+  jail: "{jail}"
+  source_ip: "{ip}"

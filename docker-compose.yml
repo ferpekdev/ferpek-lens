@@ -1,0 +1,21 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - DB_PATH=/data/ferpek.db
+    volumes:
+      - server_data:/data
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+volumes:
+  server_data:

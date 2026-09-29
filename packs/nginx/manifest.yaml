@@ -1,0 +1,19 @@
+id: nginx
+name: Nginx
+version: 0.2.0
+author: FERPEK
+description: Detection and interpretation of Nginx HTTP access events.
+
+origin: official
+
+category:
+  id: web
+  label: Web
+
+compatibility:
+  server: ">=0.3.0"
+  agent: ">=0.5.0"
+
+sources:
+  - nginx-access
+  - web-access

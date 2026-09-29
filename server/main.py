@@ -1,0 +1,3473 @@
+"""
+FERPEK Server
+
+Recebe eventos e findings de FERPEK Agents.
+
+Modelo:
+  Host/Agent
+    -> Log Sources
+    -> Events
+    -> Findings
+
+Os agentes iniciam sempre a comunicação com o servidor.
+Nenhuma porta precisa de ser aberta nos hosts monitorizados.
+"""
+
+import os
+import re
+import secrets
+import hashlib
+import sqlite3
+import threading
+import time
+import shutil
+import tempfile
+import zipfile
+from contextlib import contextmanager
+from pathlib import Path
+from typing import Optional
+from fastapi.responses import FileResponse
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
+from pydantic import BaseModel, Field
+import json
+
+import yaml
+from packaging.specifiers import SpecifierSet
+from packaging.version import Version, InvalidVersion
+
+DB_PATH = os.environ.get("DB_PATH", "/data/ferpek.db")
+
+BUILTIN_PACKS_PATH = Path("/app/packs")
+INSTALLED_PACKS_PATH = Path("/data/packs")
+PACK_ENGINE_PATH = Path("/app/ferpek_lens/pack_engine.py")
+
+EVENT_RETENTION_DAYS = 14
+RESOLVED_FINDING_RETENTION_DAYS = 90
+RETENTION_CLEANUP_INTERVAL = 3600
+
+retention_stop_event = threading.Event()
+
+SERVER_VERSION = "0.3.0"
+
+app = FastAPI(
+    title="ferpek-server",
+    version=SERVER_VERSION,
+)
+
+
+# ---------------------------------------------------------------------------
+# Database
+# ---------------------------------------------------------------------------
+
+@contextmanager
+def db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def column_exists(conn, table: str, column: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return any(row["name"] == column for row in rows)
+
+
+def init_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+    with db() as conn:
+        # Existing table: retained for compatibility.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS agents (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                hostname TEXT NOT NULL,
+                agent_key TEXT NOT NULL UNIQUE,
+                enrolled_at INTEGER NOT NULL,
+                last_seen INTEGER
+            )
+        """)
+
+        # Add host metadata without destroying existing data.
+        if not column_exists(conn, "agents", "os_name"):
+            conn.execute("ALTER TABLE agents ADD COLUMN os_name TEXT")
+
+        if not column_exists(conn, "agents", "os_version"):
+            conn.execute("ALTER TABLE agents ADD COLUMN os_version TEXT")
+
+        if not column_exists(conn, "agents", "agent_version"):
+            conn.execute("ALTER TABLE agents ADD COLUMN agent_version TEXT")
+
+        if not column_exists(conn, "agents", "machine_type"):
+            conn.execute("ALTER TABLE agents ADD COLUMN machine_type TEXT")
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS findings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id INTEGER NOT NULL,
+                pattern_id TEXT NOT NULL,
+                service TEXT NOT NULL,
+                severity TEXT NOT NULL,
+                title TEXT NOT NULL,
+                detail TEXT,
+                suggest TEXT,
+                source_line TEXT,
+                received_at INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open',
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )
+        """)
+
+        if not column_exists(conn, "findings", "group_key"):
+            conn.execute(
+                "ALTER TABLE findings ADD COLUMN group_key TEXT NOT NULL DEFAULT ''"
+            )
+
+        if not column_exists(conn, "findings", "first_seen"):
+            conn.execute(
+                "ALTER TABLE findings ADD COLUMN first_seen INTEGER"
+            )
+
+        if not column_exists(conn, "findings", "last_seen"):
+            conn.execute(
+                "ALTER TABLE findings ADD COLUMN last_seen INTEGER"
+            )
+
+        if not column_exists(conn, "findings", "detection_count"):
+            conn.execute(
+                "ALTER TABLE findings ADD COLUMN detection_count INTEGER NOT NULL DEFAULT 1"
+            )
+
+        if not column_exists(conn, "findings", "resolved_at"):
+            conn.execute(
+                "ALTER TABLE findings ADD COLUMN resolved_at INTEGER"
+            )
+
+        conn.execute(
+            """
+            UPDATE findings
+            SET
+                first_seen = COALESCE(first_seen, received_at),
+                last_seen = COALESCE(last_seen, received_at)
+            """
+        )
+
+
+        # Historical resolved findings predate resolved_at.
+        # Their exact resolution time is unknown, so received_at
+        # is used only as a migration fallback.
+        conn.execute(
+            """
+            UPDATE findings
+            SET resolved_at = received_at
+            WHERE status = 'resolved'
+              AND resolved_at IS NULL
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_findings_status_resolved_at
+            ON findings(status, resolved_at)
+            """
+        )
+
+
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_unique_open_group
+            ON findings(
+                agent_id,
+                pattern_id,
+                group_key
+            )
+            WHERE status = 'open'
+            """
+        )
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS enrollment_tokens (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token TEXT NOT NULL UNIQUE,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                used_at INTEGER
+            )
+        """)
+        if not column_exists(conn, "enrollment_tokens", "agent_id"):
+            conn.execute(
+                "ALTER TABLE enrollment_tokens ADD COLUMN agent_id INTEGER"
+            )
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS pack_states (
+                pack_id TEXT PRIMARY KEY,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                updated_at INTEGER NOT NULL
+            )
+        """)
+
+        now = int(time.time())
+
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO settings
+                (key, value, updated_at)
+            VALUES
+                ('event_retention_days', '14', ?)
+            """,
+            (now,),
+        )
+
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO settings
+                (key, value, updated_at)
+            VALUES
+                ('relevant_retention_days', '30', ?)
+            """,
+            (now,),
+        )
+
+
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO settings
+                (key, value, updated_at)
+            VALUES
+                ('resolved_finding_retention_days', '90', ?)
+            """,
+            (now,),
+        )
+
+
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO settings
+                (key, value, updated_at)
+            VALUES
+                ('allow_community_packs', '0', ?)
+            """,
+            (now,),
+        )
+
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO settings
+                (key, value, updated_at)
+            VALUES
+                ('allow_local_packs', '1', ?)
+            """,
+            (now,),
+        )
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS log_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id INTEGER NOT NULL,
+                source_key TEXT NOT NULL,
+                name TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                path TEXT,
+                unit TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                send_events INTEGER NOT NULL DEFAULT 1,
+                discovered INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                UNIQUE(agent_id, source_key),
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id INTEGER NOT NULL,
+                source_key TEXT NOT NULL,
+                event_time INTEGER NOT NULL,
+                service TEXT,
+                severity TEXT,
+                message TEXT NOT NULL,
+                metadata TEXT,
+                received_at INTEGER NOT NULL,
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )
+        """)
+
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS relevant_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id INTEGER NOT NULL,
+                source_key TEXT NOT NULL,
+                event_time INTEGER NOT NULL,
+                pack_id TEXT NOT NULL,
+                rule_id TEXT NOT NULL,
+                service TEXT,
+                severity TEXT,
+                title TEXT NOT NULL,
+                detail TEXT,
+                fields TEXT,
+                source_message TEXT,
+                received_at INTEGER NOT NULL,
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_events_agent_time
+            ON events(agent_id, event_time DESC)
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_events_source_time
+            ON events(source_key, event_time DESC)
+        """)
+
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_relevant_agent_time
+            ON relevant_events(agent_id, event_time DESC)
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_relevant_received_at
+            ON relevant_events(received_at DESC)
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_findings_agent_time
+            ON findings(agent_id, received_at DESC)
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_events_received_at
+            ON events(received_at)
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_findings_status_received_at
+            ON findings(status, received_at)
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_findings_open_group
+            ON findings(agent_id, pattern_id, group_key, status)
+        """)
+
+
+
+def get_setting_int(key: str, default: int) -> int:
+    try:
+        with db() as conn:
+            row = conn.execute(
+                """
+                SELECT value
+                FROM settings
+                WHERE key = ?
+                """,
+                (key,),
+            ).fetchone()
+
+        if row is None:
+            return default
+
+        return int(row["value"])
+
+    except (
+        ValueError,
+        TypeError,
+        sqlite3.Error,
+    ):
+        return default
+
+
+def get_setting_bool(key: str, default: bool) -> bool:
+    try:
+        with db() as conn:
+            row = conn.execute(
+                """
+                SELECT value
+                FROM settings
+                WHERE key = ?
+                """,
+                (key,),
+            ).fetchone()
+
+        if row is None:
+            return default
+
+        return str(row["value"]).lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    except sqlite3.Error:
+        return default
+
+
+def cleanup_retention():
+    now = int(time.time())
+
+    event_retention_days = get_setting_int(
+        "event_retention_days",
+        EVENT_RETENTION_DAYS,
+    )
+
+    relevant_retention_days = get_setting_int(
+        "relevant_retention_days",
+        30,
+    )
+
+    resolved_finding_retention_days = get_setting_int(
+        "resolved_finding_retention_days",
+        RESOLVED_FINDING_RETENTION_DAYS,
+    )
+
+    event_cutoff = (
+        now
+        - event_retention_days * 24 * 60 * 60
+    )
+
+    relevant_cutoff = (
+        now
+        - relevant_retention_days * 24 * 60 * 60
+    )
+
+    finding_cutoff = (
+        now
+        - resolved_finding_retention_days
+        * 24 * 60 * 60
+    )
+
+    with db() as conn:
+        events_deleted = conn.execute(
+            """
+            DELETE FROM events
+            WHERE received_at < ?
+            """,
+            (event_cutoff,),
+        ).rowcount
+
+        relevant_deleted = conn.execute(
+            """
+            DELETE FROM relevant_events
+            WHERE received_at < ?
+            """,
+            (relevant_cutoff,),
+        ).rowcount
+
+        findings_deleted = conn.execute(
+            """
+            DELETE FROM findings
+            WHERE status = 'resolved'
+              AND resolved_at IS NOT NULL
+              AND resolved_at < ?
+            """,
+            (finding_cutoff,),
+        ).rowcount
+
+    if events_deleted or relevant_deleted or findings_deleted:
+        print(
+            "[FERPEK Retention] "
+            f"deleted {events_deleted} event(s), "
+            f"{relevant_deleted} relevant event(s), "
+            f"{findings_deleted} resolved finding(s)",
+            flush=True,
+        )
+
+
+def retention_worker():
+    while not retention_stop_event.is_set():
+        try:
+            cleanup_retention()
+        except Exception as exc:
+            print(
+                f"[FERPEK Retention] cleanup failed: {exc}",
+                flush=True,
+            )
+
+        retention_stop_event.wait(
+            RETENTION_CLEANUP_INTERVAL
+        )
+
+
+@app.on_event("startup")
+def on_startup():
+    init_db()
+
+    retention_stop_event.clear()
+
+    retention_thread = threading.Thread(
+        target=retention_worker,
+        daemon=True,
+        name="retention-cleanup",
+    )
+
+    retention_thread.start()
+
+
+@app.on_event("shutdown")
+def on_shutdown():
+    retention_stop_event.set()
+
+
+# ---------------------------------------------------------------------------
+# API models
+# ---------------------------------------------------------------------------
+
+class PackSettings(BaseModel):
+    allow_community_packs: bool = False
+    allow_local_packs: bool = True
+
+
+class RetentionSettings(BaseModel):
+    event_retention_days: int = Field(
+        default=14,
+        ge=1,
+        le=3650,
+    )
+
+    relevant_retention_days: int = Field(
+        default=30,
+        ge=1,
+        le=3650,
+    )
+
+    resolved_finding_retention_days: int = Field(
+        default=90,
+        ge=1,
+        le=3650,
+    )
+
+
+class EnrollRequest(BaseModel):
+    hostname: str
+    token: str
+    os_name: str = ""
+    os_version: str = ""
+    agent_version: str = ""
+
+
+class EnrollResponse(BaseModel):
+    agent_id: int
+    agent_key: str
+
+
+class FindingIn(BaseModel):
+    pattern_id: str
+    group_key: str = ""
+    service: str
+    severity: str
+    title: str
+    detail: str = ""
+    suggest: str = ""
+    source_line: str = ""
+
+
+class FindingsBatch(BaseModel):
+    findings: list[FindingIn]
+
+
+class EventIn(BaseModel):
+    source_key: str
+    timestamp: int
+    service: str = ""
+    severity: str = "info"
+    message: str
+    metadata: str = ""
+
+
+class EventsBatch(BaseModel):
+    events: list[EventIn] = Field(max_length=500)
+
+
+class RelevantEventIn(BaseModel):
+    source_key: str
+    timestamp: int
+    pack_id: str
+    rule_id: str
+    service: str = ""
+    severity: str = "info"
+    title: str
+    detail: str = ""
+    fields: dict[str, str] = Field(default_factory=dict)
+    source_message: str = ""
+
+
+class RelevantEventsBatch(BaseModel):
+    events: list[RelevantEventIn] = Field(max_length=500)
+
+
+class SourceIn(BaseModel):
+    source_key: str
+    name: str
+    source_type: str
+    path: str = ""
+    unit: str = ""
+    enabled: bool = True
+    send_events: bool = True
+    discovered: bool = False
+
+
+class SourcesBatch(BaseModel):
+    sources: list[SourceIn]
+
+
+class AgentMetadata(BaseModel):
+    os_name: str = ""
+    os_version: str = ""
+    agent_version: str = ""
+    machine_type: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Agent authentication
+# ---------------------------------------------------------------------------
+
+def get_agent(authorization: Optional[str] = Header(None)):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            401,
+            "Falta o header Authorization: Bearer <agent_key>",
+        )
+
+    agent_key = authorization.removeprefix("Bearer ").strip()
+
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM agents WHERE agent_key = ?",
+            (agent_key,),
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(401, "agent_key inválido")
+
+        now = int(time.time())
+
+        conn.execute(
+            "UPDATE agents SET last_seen = ? WHERE id = ?",
+            (now, row["id"]),
+        )
+
+        agent = dict(row)
+        agent["last_seen"] = now
+        return agent
+
+
+# ---------------------------------------------------------------------------
+# General
+# ---------------------------------------------------------------------------
+
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "version": SERVER_VERSION,
+    }
+
+@app.get("/install-agent.sh", include_in_schema=False)
+def download_agent_installer():
+    return FileResponse(
+        "/app/install-agent.sh",
+        media_type="text/x-shellscript",
+        filename="install-agent.sh",
+    )
+
+
+@app.get("/agent.py", include_in_schema=False)
+def download_agent():
+    return FileResponse(
+        "/app/agent.py",
+        media_type="text/x-python",
+        filename="agent.py",
+    )
+
+
+class EnrollmentTokenStatusRequest(BaseModel):
+    token: str
+
+
+def hash_enrollment_token(token: str) -> str:
+    return hashlib.sha256(
+        token.encode("utf-8")
+    ).hexdigest()
+
+
+# ---------------------------------------------------------------------------
+# Enrollment
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/enrollment-tokens")
+def create_enrollment_token():
+    now = int(time.time())
+    expires_at = now + 900
+    token = "enr_" + secrets.token_urlsafe(24)
+    token_hash = hash_enrollment_token(token)
+
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO enrollment_tokens
+                (token, created_at, expires_at)
+            VALUES (?, ?, ?)
+            """,
+            (token_hash, now, expires_at),
+        )
+
+    return {
+        "token": token,
+        "expires_at": expires_at,
+        "expires_in": 900,
+    }
+
+@app.post("/api/v1/enrollment-tokens/status")
+def enrollment_token_status(
+    req: EnrollmentTokenStatusRequest,
+):
+    now = int(time.time())
+    token = req.token
+
+    with db() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                enrollment_tokens.created_at,
+                enrollment_tokens.expires_at,
+                enrollment_tokens.used_at,
+                enrollment_tokens.agent_id,
+                agents.hostname,
+                agents.os_name,
+                agents.os_version,
+                agents.agent_version,
+                agents.last_seen
+            FROM enrollment_tokens
+            LEFT JOIN agents
+                ON agents.id = enrollment_tokens.agent_id
+            WHERE enrollment_tokens.token IN (?, ?)
+            """,
+            (
+                hash_enrollment_token(token),
+                token,
+            ),
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(404, "Token não encontrado")
+
+    if row["agent_id"] is not None:
+        return {
+            "status": "enrolled",
+            "agent": {
+                "id": row["agent_id"],
+                "hostname": row["hostname"],
+                "os_name": row["os_name"],
+                "os_version": row["os_version"],
+                "agent_version": row["agent_version"],
+                "last_seen": row["last_seen"],
+            },
+        }
+
+    if row["used_at"] is not None:
+        return {
+            "status": "used",
+            "expires_in": 0,
+        }
+
+    if row["expires_at"] < now:
+        return {
+            "status": "expired",
+            "expires_in": 0,
+        }
+
+    return {
+        "status": "waiting",
+        "expires_in": max(0, row["expires_at"] - now),
+    }
+
+@app.post("/api/v1/enroll", response_model=EnrollResponse)
+def enroll(req: EnrollRequest):
+    now = int(time.time())
+
+    with db() as conn:
+        token_row = conn.execute(
+            """
+            SELECT *
+            FROM enrollment_tokens
+            WHERE token IN (?, ?)
+            """,
+            (
+                hash_enrollment_token(req.token),
+                req.token,
+            ),
+        ).fetchone()
+
+        if not token_row:
+            raise HTTPException(
+                403,
+                "Token de enrolamento inválido",
+            )
+
+        if token_row["used_at"] is not None:
+            raise HTTPException(
+                403,
+                "Token de enrolamento já utilizado",
+            )
+
+        if token_row["expires_at"] < now:
+            raise HTTPException(
+                403,
+                "Token de enrolamento expirado",
+            )
+
+        reservation = conn.execute(
+            """
+            UPDATE enrollment_tokens
+            SET used_at = ?
+            WHERE id = ?
+              AND used_at IS NULL
+              AND expires_at >= ?
+            """,
+            (
+                now,
+                token_row["id"],
+                now,
+            ),
+        )
+
+        if reservation.rowcount != 1:
+            current_token = conn.execute(
+                """
+                SELECT used_at, expires_at
+                FROM enrollment_tokens
+                WHERE id = ?
+                """,
+                (token_row["id"],),
+            ).fetchone()
+
+            if (
+                current_token
+                and current_token["used_at"] is not None
+            ):
+                raise HTTPException(
+                    403,
+                    "Token de enrolamento já utilizado",
+                )
+
+            if (
+                current_token
+                and current_token["expires_at"] < now
+            ):
+                raise HTTPException(
+                    403,
+                    "Token de enrolamento expirado",
+                )
+
+            raise HTTPException(
+                403,
+                "Token de enrolamento inválido",
+            )
+
+        agent_key = secrets.token_hex(24)
+
+        cur = conn.execute(
+            """
+            INSERT INTO agents
+                (
+                    hostname,
+                    agent_key,
+                    enrolled_at,
+                    last_seen,
+                    os_name,
+                    os_version,
+                    agent_version
+                )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                req.hostname,
+                agent_key,
+                now,
+                now,
+                req.os_name,
+                req.os_version,
+                req.agent_version,
+            ),
+        )
+
+        agent_id = cur.lastrowid
+
+        conn.execute(
+            """
+            UPDATE enrollment_tokens
+            SET agent_id = ?
+            WHERE id = ?
+              AND used_at = ?
+            """,
+            (
+                agent_id,
+                token_row["id"],
+                now,
+            ),
+        )
+
+    return EnrollResponse(
+        agent_id=agent_id,
+        agent_key=agent_key,
+    )
+
+
+
+# ---------------------------------------------------------------------------
+# Agent metadata
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/agent/metadata")
+def update_agent_metadata(
+    metadata: AgentMetadata,
+    agent: dict = Depends(get_agent),
+):
+    with db() as conn:
+        conn.execute(
+            """
+            UPDATE agents
+            SET os_name = ?,
+                os_version = ?,
+                agent_version = ?,
+                machine_type = ?
+            WHERE id = ?
+            """,
+            (
+                metadata.os_name,
+                metadata.os_version,
+                metadata.agent_version,
+                metadata.machine_type,
+                agent["id"],
+            ),
+        )
+
+    return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Sources
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/sources/discover")
+def discover_sources(
+    batch: SourcesBatch,
+    agent: dict = Depends(get_agent),
+):
+    now = int(time.time())
+
+    with db() as conn:
+        for source in batch.sources:
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM log_sources
+                WHERE agent_id = ? AND source_key = ?
+                """,
+                (agent["id"], source.source_key),
+            ).fetchone()
+
+            if existing:
+                # Discovery must not overwrite the user's enabled/send_events
+                # choices after initial creation.
+                conn.execute(
+                    """
+                    UPDATE log_sources
+                    SET name = ?,
+                        source_type = ?,
+                        path = ?,
+                        unit = ?,
+                        discovered = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        source.name,
+                        source.source_type,
+                        source.path,
+                        source.unit,
+                        int(source.discovered),
+                        now,
+                        existing["id"],
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO log_sources
+                        (
+                            agent_id,
+                            source_key,
+                            name,
+                            source_type,
+                            path,
+                            unit,
+                            enabled,
+                            send_events,
+                            discovered,
+                            created_at,
+                            updated_at
+                        )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        agent["id"],
+                        source.source_key,
+                        source.name,
+                        source.source_type,
+                        source.path,
+                        source.unit,
+                        int(source.enabled),
+                        int(source.send_events),
+                        int(source.discovered),
+                        now,
+                        now,
+                    ),
+                )
+
+    return {"received": len(batch.sources)}
+
+
+@app.get("/api/v1/agent/config")
+def get_agent_config(agent: dict = Depends(get_agent)):
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                source_key,
+                name,
+                source_type,
+                path,
+                unit,
+                enabled,
+                send_events,
+                discovered
+            FROM log_sources
+            WHERE agent_id = ?
+            ORDER BY name
+            """,
+            (agent["id"],),
+        ).fetchall()
+
+    return {
+        "agent_id": agent["id"],
+        "hostname": agent["hostname"],
+        "sources": [
+            {
+                **dict(row),
+                "enabled": bool(row["enabled"]),
+                "send_events": bool(row["send_events"]),
+                "discovered": bool(row["discovered"]),
+            }
+            for row in rows
+        ],
+    }
+
+
+@app.get("/api/v1/agents/{agent_id}/sources")
+def list_agent_sources(agent_id: int):
+    with db() as conn:
+        agent = conn.execute(
+            "SELECT id FROM agents WHERE id = ?",
+            (agent_id,),
+        ).fetchone()
+
+        if not agent:
+            raise HTTPException(404, "Host não encontrado")
+
+        rows = conn.execute(
+            """
+            SELECT *
+            FROM log_sources
+            WHERE agent_id = ?
+            ORDER BY name
+            """,
+            (agent_id,),
+        ).fetchall()
+
+    return [
+        {
+            **dict(row),
+            "enabled": bool(row["enabled"]),
+            "send_events": bool(row["send_events"]),
+            "discovered": bool(row["discovered"]),
+        }
+        for row in rows
+    ]
+
+
+@app.patch("/api/v1/agents/{agent_id}/sources/{source_key}")
+def update_agent_source(
+    agent_id: int,
+    source_key: str,
+    enabled: Optional[bool] = None,
+    send_events: Optional[bool] = None,
+):
+    if enabled is None and send_events is None:
+        raise HTTPException(400, "Nenhuma alteração pedida")
+
+    with db() as conn:
+        row = conn.execute(
+            """
+            SELECT *
+            FROM log_sources
+            WHERE agent_id = ? AND source_key = ?
+            """,
+            (agent_id, source_key),
+        ).fetchone()
+
+        if not row:
+            raise HTTPException(404, "Source não encontrada")
+
+        new_enabled = int(enabled) if enabled is not None else row["enabled"]
+        new_send_events = (
+            int(send_events)
+            if send_events is not None
+            else row["send_events"]
+        )
+
+        conn.execute(
+            """
+            UPDATE log_sources
+            SET enabled = ?,
+                send_events = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                new_enabled,
+                new_send_events,
+                int(time.time()),
+                row["id"],
+            ),
+        )
+
+    return {"ok": True}
+
+
+@app.get("/api/v1/settings/packs")
+def get_pack_settings():
+    return {
+        "allow_community_packs": get_setting_bool(
+            "allow_community_packs",
+            False,
+        ),
+        "allow_local_packs": get_setting_bool(
+            "allow_local_packs",
+            True,
+        ),
+    }
+
+
+@app.put("/api/v1/settings/packs")
+def update_pack_settings(
+    settings: PackSettings,
+):
+    now = int(time.time())
+
+    values = {
+        "allow_community_packs": (
+            "1" if settings.allow_community_packs else "0"
+        ),
+        "allow_local_packs": (
+            "1" if settings.allow_local_packs else "0"
+        ),
+    }
+
+    with db() as conn:
+        for key, value in values.items():
+            conn.execute(
+                """
+                INSERT INTO settings
+                    (key, value, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(key)
+                DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    key,
+                    value,
+                    now,
+                ),
+            )
+
+    return {
+        "ok": True,
+        **settings.model_dump(),
+    }
+
+
+@app.get("/api/v1/settings/retention")
+def get_retention_settings():
+    return {
+        "event_retention_days": get_setting_int(
+            "event_retention_days",
+            EVENT_RETENTION_DAYS,
+        ),
+        "relevant_retention_days": get_setting_int(
+            "relevant_retention_days",
+            30,
+        ),
+        "resolved_finding_retention_days": get_setting_int(
+            "resolved_finding_retention_days",
+            RESOLVED_FINDING_RETENTION_DAYS,
+        ),
+    }
+
+
+@app.put("/api/v1/settings/retention")
+def update_retention_settings(
+    settings: RetentionSettings,
+):
+    now = int(time.time())
+
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO settings
+                (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key)
+            DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (
+                "event_retention_days",
+                str(settings.event_retention_days),
+                now,
+            ),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO settings
+                (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key)
+            DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (
+                "relevant_retention_days",
+                str(settings.relevant_retention_days),
+                now,
+            ),
+        )
+
+        conn.execute(
+            """
+            INSERT INTO settings
+                (key, value, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(key)
+            DO UPDATE SET
+                value = excluded.value,
+                updated_at = excluded.updated_at
+            """,
+            (
+                "resolved_finding_retention_days",
+                str(
+                    settings.resolved_finding_retention_days
+                ),
+                now,
+            ),
+        )
+
+    return {
+        "ok": True,
+        "event_retention_days": (
+            settings.event_retention_days
+        ),
+        "relevant_retention_days": (
+            settings.relevant_retention_days
+        ),
+        "resolved_finding_retention_days": (
+            settings.resolved_finding_retention_days
+        ),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Relevant events / Activity
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/relevant")
+def post_relevant_events(
+    batch: RelevantEventsBatch,
+    agent: dict = Depends(get_agent),
+):
+    now = int(time.time())
+
+    with db() as conn:
+        for event in batch.events:
+            conn.execute(
+                """
+                INSERT INTO relevant_events
+                    (
+                        agent_id,
+                        source_key,
+                        event_time,
+                        pack_id,
+                        rule_id,
+                        service,
+                        severity,
+                        title,
+                        detail,
+                        fields,
+                        source_message,
+                        received_at
+                    )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    agent["id"],
+                    event.source_key,
+                    event.timestamp,
+                    event.pack_id,
+                    event.rule_id,
+                    event.service,
+                    event.severity,
+                    event.title,
+                    event.detail,
+                    json.dumps(
+                        event.fields,
+                        separators=(",", ":"),
+                    ),
+                    event.source_message,
+                    now,
+                ),
+            )
+
+    return {
+        "received": len(batch.events),
+        "stored": len(batch.events),
+    }
+
+
+@app.get("/api/v1/relevant")
+def list_relevant_events(
+    agent_id: Optional[int] = None,
+    source: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    query = """
+        SELECT
+            relevant_events.*,
+            agents.hostname
+        FROM relevant_events
+        JOIN agents
+          ON agents.id = relevant_events.agent_id
+        WHERE 1 = 1
+    """
+
+    params = []
+
+    if agent_id is not None:
+        query += " AND relevant_events.agent_id = ?"
+        params.append(agent_id)
+
+    if source:
+        query += " AND relevant_events.source_key = ?"
+        params.append(source)
+
+    if search:
+        query += """
+            AND (
+                relevant_events.title LIKE ?
+                OR relevant_events.detail LIKE ?
+                OR relevant_events.source_message LIKE ?
+            )
+        """
+        search_value = f"%{search}%"
+        params.extend([
+            search_value,
+            search_value,
+            search_value,
+        ])
+
+    query += """
+        ORDER BY relevant_events.event_time DESC
+        LIMIT ?
+    """
+    params.append(limit)
+
+    with db() as conn:
+        rows = conn.execute(
+            query,
+            params,
+        ).fetchall()
+
+    return [
+        dict(row)
+        for row in rows
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Events / Log Explorer
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/events")
+def post_events(
+    batch: EventsBatch,
+    agent: dict = Depends(get_agent),
+):
+    now = int(time.time())
+
+    with db() as conn:
+        configured_sources = {
+            row["source_key"]: bool(row["send_events"])
+            for row in conn.execute(
+                """
+                SELECT source_key, send_events
+                FROM log_sources
+                WHERE agent_id = ?
+                """,
+                (agent["id"],),
+            ).fetchall()
+        }
+
+        accepted = 0
+
+        for event in batch.events:
+            # Server-side enforcement as well as agent-side filtering.
+            if not configured_sources.get(event.source_key, False):
+                continue
+
+            conn.execute(
+                """
+                INSERT INTO events
+                    (
+                        agent_id,
+                        source_key,
+                        event_time,
+                        service,
+                        severity,
+                        message,
+                        metadata,
+                        received_at
+                    )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    agent["id"],
+                    event.source_key,
+                    event.timestamp,
+                    event.service,
+                    event.severity,
+                    event.message,
+                    event.metadata,
+                    now,
+                ),
+            )
+
+            accepted += 1
+
+    return {
+        "received": len(batch.events),
+        "stored": accepted,
+    }
+
+
+@app.get("/api/v1/events")
+def list_events(
+    agent_id: Optional[int] = None,
+    source: Optional[str] = None,
+    search: Optional[str] = None,
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    query = """
+        SELECT
+            events.*,
+            agents.hostname
+        FROM events
+        JOIN agents ON agents.id = events.agent_id
+        WHERE 1 = 1
+    """
+
+    params = []
+
+    if agent_id is not None:
+        query += " AND events.agent_id = ?"
+        params.append(agent_id)
+
+    if source:
+        query += " AND events.source_key = ?"
+        params.append(source)
+
+    if search:
+        query += " AND events.message LIKE ?"
+        params.append(f"%{search}%")
+
+    query += " ORDER BY events.event_time DESC LIMIT ?"
+    params.append(limit)
+
+    with db() as conn:
+        rows = conn.execute(query, params).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# Findings
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/findings")
+def post_findings(
+    batch: FindingsBatch,
+    agent: dict = Depends(get_agent),
+):
+    now = int(time.time())
+
+    created = 0
+    updated = 0
+
+    with db() as conn:
+        for finding in batch.findings:
+            existing = conn.execute(
+                """
+                SELECT id
+                FROM findings
+                WHERE agent_id = ?
+                  AND pattern_id = ?
+                  AND group_key = ?
+                  AND status = 'open'
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (
+                    agent["id"],
+                    finding.pattern_id,
+                    finding.group_key,
+                ),
+            ).fetchone()
+
+            if existing:
+                conn.execute(
+                    """
+                    UPDATE findings
+                    SET
+                        service = ?,
+                        severity = ?,
+                        title = ?,
+                        detail = ?,
+                        suggest = ?,
+                        source_line = ?,
+                        last_seen = ?,
+                        received_at = ?,
+                        detection_count = detection_count + 1
+                    WHERE id = ?
+                    """,
+                    (
+                        finding.service,
+                        finding.severity,
+                        finding.title,
+                        finding.detail,
+                        finding.suggest,
+                        finding.source_line,
+                        now,
+                        now,
+                        existing["id"],
+                    ),
+                )
+
+                updated += 1
+
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO findings
+                        (
+                            agent_id,
+                            pattern_id,
+                            group_key,
+                            service,
+                            severity,
+                            title,
+                            detail,
+                            suggest,
+                            source_line,
+                            received_at,
+                            first_seen,
+                            last_seen,
+                            detection_count
+                        )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    """,
+                    (
+                        agent["id"],
+                        finding.pattern_id,
+                        finding.group_key,
+                        finding.service,
+                        finding.severity,
+                        finding.title,
+                        finding.detail,
+                        finding.suggest,
+                        finding.source_line,
+                        now,
+                        now,
+                        now,
+                    ),
+                )
+
+                created += 1
+
+    return {
+        "received": len(batch.findings),
+        "created": created,
+        "updated": updated,
+    }
+
+
+@app.get("/api/v1/findings")
+def list_findings(
+    status: Optional[str] = None,
+    agent_id: Optional[int] = None,
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    query = """
+        SELECT
+            findings.*,
+            agents.hostname
+        FROM findings
+        JOIN agents ON agents.id = findings.agent_id
+        WHERE 1 = 1
+    """
+
+    params = []
+
+    if status:
+        query += " AND findings.status = ?"
+        params.append(status)
+
+    if agent_id is not None:
+        query += " AND findings.agent_id = ?"
+        params.append(agent_id)
+
+    query += " ORDER BY received_at DESC LIMIT ?"
+    params.append(limit)
+
+    with db() as conn:
+        rows = conn.execute(query, params).fetchall()
+
+    return [dict(row) for row in rows]
+
+
+@app.post("/api/v1/findings/{finding_id}/resolve")
+def resolve_finding(finding_id: int):
+    now = int(time.time())
+
+    with db() as conn:
+        result = conn.execute(
+            """
+            UPDATE findings
+            SET
+                status = 'resolved',
+                resolved_at = COALESCE(resolved_at, ?)
+            WHERE id = ?
+            """,
+            (
+                now,
+                finding_id,
+            ),
+        )
+
+        if result.rowcount == 0:
+            raise HTTPException(404, "Finding não encontrado")
+
+    return {
+        "ok": True,
+        "resolved_at": now,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Hosts
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/agents")
+def list_agents():
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                agents.id,
+                agents.hostname,
+                agents.enrolled_at,
+                agents.last_seen,
+                agents.os_name,
+                agents.os_version,
+                agents.agent_version,
+                agents.machine_type,
+
+                SUM(
+                    CASE
+                        WHEN findings.status = 'open'
+                         AND findings.severity = 'crit'
+                        THEN 1 ELSE 0
+                    END
+                ) AS critical_count,
+
+                SUM(
+                    CASE
+                        WHEN findings.status = 'open'
+                         AND findings.severity = 'warn'
+                        THEN 1 ELSE 0
+                    END
+                ) AS warning_count
+
+            FROM agents
+
+            LEFT JOIN findings
+                ON findings.agent_id = agents.id
+
+            GROUP BY agents.id
+            ORDER BY agents.hostname
+            """
+        ).fetchall()
+
+    return [dict(row) for row in rows]
+@app.delete("/api/v1/agents/{agent_id}")
+def delete_agent(agent_id: int):
+    with db() as conn:
+        agent = conn.execute(
+            """
+            SELECT id, hostname
+            FROM agents
+            WHERE id = ?
+            """,
+            (agent_id,),
+        ).fetchone()
+
+        if not agent:
+            raise HTTPException(404, "Host não encontrado")
+
+        # Remove all data belonging to this host.
+        conn.execute(
+            "DELETE FROM events WHERE agent_id = ?",
+            (agent_id,),
+        )
+
+        conn.execute(
+            "DELETE FROM relevant_events WHERE agent_id = ?",
+            (agent_id,),
+        )
+
+        conn.execute(
+            "DELETE FROM findings WHERE agent_id = ?",
+            (agent_id,),
+        )
+
+        conn.execute(
+            "DELETE FROM log_sources WHERE agent_id = ?",
+            (agent_id,),
+        )
+
+        # Keep historical enrollment tokens, but remove their link
+        # to a host that no longer exists.
+        conn.execute(
+            """
+            UPDATE enrollment_tokens
+            SET agent_id = NULL
+            WHERE agent_id = ?
+            """,
+            (agent_id,),
+        )
+
+        conn.execute(
+            "DELETE FROM agents WHERE id = ?",
+            (agent_id,),
+        )
+
+    return {
+        "ok": True,
+        "deleted_agent_id": agent_id,
+        "hostname": agent["hostname"],
+    }
+
+
+
+def read_pack_manifest(pack_dir: Path):
+    manifest_path = pack_dir / "manifest.yaml"
+
+    if not manifest_path.is_file():
+        return None
+
+    try:
+        manifest = yaml.safe_load(
+            manifest_path.read_text(
+                encoding="utf-8"
+            )
+        ) or {}
+    except Exception as exc:
+        raise HTTPException(
+            500,
+            f"Invalid pack manifest {pack_dir.name}: {exc}",
+        )
+
+    pack_id = manifest.get("id")
+    version = manifest.get("version")
+
+    if not pack_id or not version:
+        raise HTTPException(
+            500,
+            f"Pack {pack_dir.name} has no id or version",
+        )
+
+    return manifest
+
+
+def is_pack_enabled(pack_id: str) -> bool:
+    try:
+        with db() as conn:
+            row = conn.execute(
+                '''
+                SELECT enabled
+                FROM pack_states
+                WHERE pack_id = ?
+                ''',
+                (pack_id,),
+            ).fetchone()
+
+        if row is None:
+            return True
+
+        return bool(row["enabled"])
+
+    except sqlite3.Error:
+        return True
+
+
+def is_pack_allowed(manifest: dict) -> bool:
+    origin = str(
+        manifest.get("origin", "local")
+    ).strip().lower()
+
+    if origin == "official":
+        return True
+
+    if origin == "community":
+        return get_setting_bool(
+            "allow_community_packs",
+            False,
+        )
+
+    if origin in {
+        "local",
+        "private",
+    }:
+        return get_setting_bool(
+            "allow_local_packs",
+            True,
+        )
+
+    # Unknown origins are treated conservatively
+    # as local/private packs.
+    return get_setting_bool(
+        "allow_local_packs",
+        True,
+    )
+
+
+
+def version_matches(
+    version: str,
+    requirement: str,
+) -> bool:
+    if not requirement:
+        return True
+
+    try:
+        return Version(version) in SpecifierSet(requirement)
+    except (
+        InvalidVersion,
+        ValueError,
+    ):
+        return False
+
+
+def get_pack_compatibility(manifest: dict) -> dict:
+    compatibility = manifest.get(
+        "compatibility",
+        {},
+    )
+
+    if not isinstance(compatibility, dict):
+        return {}
+
+    return compatibility
+
+
+def is_pack_server_compatible(
+    manifest: dict,
+) -> bool:
+    compatibility = get_pack_compatibility(
+        manifest
+    )
+
+    requirement = str(
+        compatibility.get("server", "")
+    ).strip()
+
+    return version_matches(
+        SERVER_VERSION,
+        requirement,
+    )
+
+
+def is_pack_agent_compatible(
+    manifest: dict,
+    agent_version: str,
+) -> bool:
+    compatibility = get_pack_compatibility(
+        manifest
+    )
+
+    requirement = str(
+        compatibility.get("agent", "")
+    ).strip()
+
+    if not requirement:
+        return True
+
+    if not agent_version:
+        return False
+
+    return version_matches(
+        agent_version,
+        requirement,
+    )
+
+
+
+def validate_pack_rule(rule: dict, rule_name: str):
+    if not isinstance(rule, dict):
+        raise HTTPException(
+            400,
+            f"{rule_name} must contain a YAML object",
+        )
+
+    rule_id = str(rule.get("id", "")).strip()
+
+    if not rule_id:
+        raise HTTPException(
+            400,
+            f"{rule_name} has no id",
+        )
+
+    sources = rule.get("sources", [])
+    source_family = rule.get("source_family")
+
+    if not sources and not source_family:
+        raise HTTPException(
+            400,
+            f"{rule_id}: no sources or source_family configured",
+        )
+
+    if sources and not isinstance(sources, list):
+        raise HTTPException(
+            400,
+            f"{rule_id}: sources must be a list",
+        )
+
+    match = rule.get("match")
+
+    if not isinstance(match, dict):
+        raise HTTPException(
+            400,
+            f"{rule_id}: match must be an object",
+        )
+
+    pattern = match.get("regex")
+
+    if not pattern:
+        raise HTTPException(
+            400,
+            f"{rule_id}: match.regex missing",
+        )
+
+    try:
+        re.compile(str(pattern))
+    except re.error as exc:
+        raise HTTPException(
+            400,
+            f"{rule_id}: invalid regex: {exc}",
+        )
+
+    relevant = rule.get("relevant")
+
+    if relevant is not None and not isinstance(
+        relevant,
+        dict,
+    ):
+        raise HTTPException(
+            400,
+            f"{rule_id}: relevant must be an object",
+        )
+
+    finding = rule.get("finding")
+
+    if finding is not None and not isinstance(
+        finding,
+        dict,
+    ):
+        raise HTTPException(
+            400,
+            f"{rule_id}: finding must be an object",
+        )
+
+    aggregate = rule.get("aggregate")
+
+    if aggregate is not None:
+        if not isinstance(aggregate, dict):
+            raise HTTPException(
+                400,
+                f"{rule_id}: aggregate must be an object",
+            )
+
+        for field in (
+            "threshold",
+            "window_seconds",
+            "cooldown_seconds",
+        ):
+            if field not in aggregate:
+                continue
+
+            try:
+                value = int(aggregate[field])
+            except (TypeError, ValueError):
+                raise HTTPException(
+                    400,
+                    f"{rule_id}: aggregate.{field} must be an integer",
+                )
+
+            if value < 0:
+                raise HTTPException(
+                    400,
+                    f"{rule_id}: aggregate.{field} cannot be negative",
+                )
+
+        if (
+            "threshold" in aggregate
+            and int(aggregate["threshold"]) < 1
+        ):
+            raise HTTPException(
+                400,
+                f"{rule_id}: aggregate.threshold must be at least 1",
+            )
+
+
+def validate_pack_manifest(manifest: dict):
+    if not isinstance(manifest, dict):
+        raise HTTPException(
+            400,
+            "manifest.yaml must contain a YAML object",
+        )
+
+    pack_id = str(
+        manifest.get("id", "")
+    ).strip()
+
+    name = str(
+        manifest.get("name", "")
+    ).strip()
+
+    version = str(
+        manifest.get("version", "")
+    ).strip()
+
+    if not pack_id:
+        raise HTTPException(
+            400,
+            "Pack manifest requires id",
+        )
+
+    if not name:
+        raise HTTPException(
+            400,
+            "Pack manifest requires name",
+        )
+
+    if not version:
+        raise HTTPException(
+            400,
+            "Pack manifest requires version",
+        )
+
+    if not all(
+        char.isalnum() or char in {"-", "_"}
+        for char in pack_id
+    ):
+        raise HTTPException(
+            400,
+            "Pack id may contain only letters, numbers, - and _",
+        )
+
+    try:
+        Version(version)
+    except InvalidVersion:
+        raise HTTPException(
+            400,
+            f"Invalid pack version: {version}",
+        )
+
+    origin = str(
+        manifest.get("origin", "local")
+    ).strip().lower()
+
+    if origin not in {
+        "official",
+        "community",
+        "local",
+        "private",
+    }:
+        raise HTTPException(
+            400,
+            "Pack origin must be one of: "
+            "official, community, local, private",
+        )
+
+    category = manifest.get("category")
+
+    if not isinstance(category, dict):
+        raise HTTPException(
+            400,
+            "Pack category must be an object",
+        )
+
+    category_id = str(
+        category.get("id", "")
+    ).strip()
+
+    category_label = str(
+        category.get("label", "")
+    ).strip()
+
+    if not category_id or not category_label:
+        raise HTTPException(
+            400,
+            "Pack category requires id and label",
+        )
+
+    sources = manifest.get("sources")
+
+    if not isinstance(sources, list):
+        raise HTTPException(
+            400,
+            "Pack sources must be a list",
+        )
+
+    if not sources:
+        raise HTTPException(
+            400,
+            "Pack sources cannot be empty",
+        )
+
+    if not all(
+        isinstance(source, str) and source.strip()
+        for source in sources
+    ):
+        raise HTTPException(
+            400,
+            "Pack sources must contain only non-empty strings",
+        )
+
+    compatibility = manifest.get("compatibility")
+
+    if not isinstance(compatibility, dict):
+        raise HTTPException(
+            400,
+            "Pack compatibility must be an object",
+        )
+
+    for target in ("server", "agent"):
+        requirement = compatibility.get(target)
+
+        if requirement is None:
+            continue
+
+        if not isinstance(requirement, str):
+            raise HTTPException(
+                400,
+                f"Pack compatibility.{target} must be a string",
+            )
+
+        try:
+            SpecifierSet(requirement)
+        except ValueError:
+            raise HTTPException(
+                400,
+                f"Invalid compatibility.{target}: {requirement}",
+            )
+
+    for field in (
+        "author",
+        "description",
+    ):
+        value = manifest.get(field)
+
+        if value is not None and not isinstance(value, str):
+            raise HTTPException(
+                400,
+                f"Pack {field} must be a string",
+            )
+
+    return pack_id, version
+
+
+class PackFilesPayload(BaseModel):
+    files: dict[str, str] = Field(default_factory=dict)
+
+
+class PackStatePayload(BaseModel):
+    enabled: bool
+
+
+def validate_pack_directory(pack_dir: Path):
+    manifest_path = pack_dir / "manifest.yaml"
+
+    if not manifest_path.is_file():
+        raise HTTPException(
+            400,
+            "Pack must contain manifest.yaml",
+        )
+
+    try:
+        manifest = yaml.safe_load(
+            manifest_path.read_text(
+                encoding="utf-8"
+            )
+        ) or {}
+    except Exception as exc:
+        raise HTTPException(
+            400,
+            f"Invalid manifest.yaml: {exc}",
+        )
+
+    pack_id, version = validate_pack_manifest(
+        manifest
+    )
+
+    rules_dir = pack_dir / "rules"
+
+    if rules_dir.is_dir():
+        for rule_path in sorted(
+            list(rules_dir.glob("*.yaml"))
+            + list(rules_dir.glob("*.yml"))
+        ):
+            try:
+                rule = yaml.safe_load(
+                    rule_path.read_text(
+                        encoding="utf-8"
+                    )
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    400,
+                    f"Invalid YAML file "
+                    f"{rule_path.name}: {exc}",
+                )
+
+            validate_pack_rule(
+                rule,
+                f"rules/{rule_path.name}",
+            )
+
+    if not is_pack_server_compatible(
+        manifest
+    ):
+        raise HTTPException(
+            400,
+            f"Pack {pack_id} {version} is not compatible "
+            f"with FERPEK Server {SERVER_VERSION}",
+        )
+
+    return manifest
+
+
+def validate_pack_archive(archive_path: Path):
+    try:
+        archive = zipfile.ZipFile(archive_path, "r")
+    except zipfile.BadZipFile:
+        raise HTTPException(400, "Invalid .pack archive")
+
+    with archive:
+        members = archive.infolist()
+
+        if not members:
+            raise HTTPException(400, "Pack archive is empty")
+
+        for member in members:
+            name = member.filename
+
+            path = Path(name)
+
+            if path.is_absolute() or ".." in path.parts:
+                raise HTTPException(
+                    400,
+                    f"Unsafe path in pack: {name}",
+                )
+
+            mode = (member.external_attr >> 16) & 0o170000
+
+            if mode == 0o120000:
+                raise HTTPException(
+                    400,
+                    f"Symlinks are not allowed in packs: {name}",
+                )
+
+        names = {
+            member.filename.rstrip("/")
+            for member in members
+            if not member.is_dir()
+        }
+
+        if "manifest.yaml" not in names:
+            raise HTTPException(
+                400,
+                "Pack must contain manifest.yaml at archive root",
+            )
+
+        try:
+            manifest = yaml.safe_load(
+                archive.read("manifest.yaml").decode("utf-8")
+            ) or {}
+        except Exception as exc:
+            raise HTTPException(
+                400,
+                f"Invalid manifest.yaml: {exc}",
+            )
+
+        pack_id, version = validate_pack_manifest(
+            manifest
+        )
+
+        for name in sorted(names):
+            if not name.endswith(".yaml"):
+                continue
+
+            try:
+                document = yaml.safe_load(
+                    archive.read(name).decode("utf-8")
+                )
+            except Exception as exc:
+                raise HTTPException(
+                    400,
+                    f"Invalid YAML file {name}: {exc}",
+                )
+
+            if name.startswith("rules/"):
+                validate_pack_rule(
+                    document,
+                    name,
+                )
+
+        return manifest
+
+
+def iter_pack_dirs():
+    seen = set()
+
+    for base_path in (
+        INSTALLED_PACKS_PATH,
+        BUILTIN_PACKS_PATH,
+    ):
+        if not base_path.exists():
+            continue
+
+        for pack_dir in sorted(base_path.iterdir()):
+            if not pack_dir.is_dir():
+                continue
+
+            if pack_dir.is_symlink():
+                continue
+
+            manifest = read_pack_manifest(pack_dir)
+
+            if manifest is None:
+                continue
+
+            pack_id = manifest.get("id")
+
+            if not pack_id or pack_id in seen:
+                continue
+
+            seen.add(pack_id)
+            yield pack_dir
+
+
+def get_pack_dir(pack_id: str) -> Path:
+    pack_id = str(pack_id).strip()
+
+    if not pack_id:
+        raise HTTPException(
+            400,
+            "Pack id is required",
+        )
+
+    if not all(
+        char.isalnum() or char in {"-", "_"}
+        for char in pack_id
+    ):
+        raise HTTPException(
+            400,
+            "Invalid pack id",
+        )
+
+    for pack_dir in iter_pack_dirs():
+        manifest = read_pack_manifest(pack_dir)
+
+        if manifest is None:
+            continue
+
+        if str(manifest.get("id", "")).strip() == pack_id:
+            return pack_dir
+
+    raise HTTPException(
+        404,
+        f"Pack {pack_id} not found",
+    )
+
+
+@app.get("/api/v1/packs/{pack_id}/files")
+def list_pack_files(pack_id: str):
+    # Future permission:
+    # packs.read
+
+    pack_dir = get_pack_dir(pack_id)
+
+    files = []
+
+    for file_path in sorted(pack_dir.rglob("*")):
+        if not file_path.is_file():
+            continue
+
+        if file_path.is_symlink():
+            continue
+
+        relative = file_path.relative_to(pack_dir)
+
+        if relative.name.startswith("."):
+            continue
+
+        if relative.suffix not in {".yaml", ".yml"}:
+            continue
+
+        files.append(str(relative))
+
+    return {
+        "id": pack_id,
+        "files": files,
+    }
+
+
+@app.get("/api/v1/packs/{pack_id}/files/{file_path:path}")
+def read_pack_file(pack_id: str, file_path: str):
+    # Future permission:
+    # packs.read
+
+    pack_dir = get_pack_dir(pack_id)
+
+    requested = Path(file_path)
+
+    if requested.is_absolute() or ".." in requested.parts:
+        raise HTTPException(
+            400,
+            "Invalid pack file path",
+        )
+
+    target = (pack_dir / requested).resolve()
+
+    try:
+        target.relative_to(pack_dir.resolve())
+    except ValueError:
+        raise HTTPException(
+            400,
+            "Invalid pack file path",
+        )
+
+    if not target.is_file():
+        raise HTTPException(
+            404,
+            "Pack file not found",
+        )
+
+    if target.is_symlink():
+        raise HTTPException(
+            400,
+            "Symlinked pack files are not allowed",
+        )
+
+    if target.suffix not in {".yaml", ".yml"}:
+        raise HTTPException(
+            400,
+            "Only YAML pack files may be read",
+        )
+
+    try:
+        content = target.read_text(
+            encoding="utf-8"
+        )
+    except UnicodeDecodeError:
+        raise HTTPException(
+            400,
+            "Pack file is not valid UTF-8",
+        )
+
+    return {
+        "id": pack_id,
+        "path": str(requested),
+        "content": content,
+    }
+
+
+@app.put("/api/v1/packs/{pack_id}/files")
+def save_pack_changes(
+    pack_id: str,
+    payload: PackFilesPayload,
+):
+    # Future permission:
+    # packs.edit
+
+    source_pack_dir = get_pack_dir(pack_id)
+
+    if not payload.files:
+        raise HTTPException(
+            400,
+            "No pack files supplied",
+        )
+
+    INSTALLED_PACKS_PATH.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    staging_dir = Path(
+        tempfile.mkdtemp(
+            prefix=f".save-{pack_id}-",
+            dir=INSTALLED_PACKS_PATH,
+        )
+    )
+
+    backup_dir = None
+
+    try:
+        for source in source_pack_dir.rglob("*"):
+            if not source.is_file():
+                continue
+
+            if source.is_symlink():
+                continue
+
+            relative = source.relative_to(
+                source_pack_dir
+            )
+
+            destination = (
+                staging_dir / relative
+            )
+
+            destination.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            shutil.copy2(
+                source,
+                destination,
+            )
+
+        for file_path, content in payload.files.items():
+            requested = Path(file_path)
+
+            if (
+                requested.is_absolute()
+                or ".." in requested.parts
+            ):
+                raise HTTPException(
+                    400,
+                    "Invalid pack file path",
+                )
+
+            if requested.suffix not in {
+                ".yaml",
+                ".yml",
+            }:
+                raise HTTPException(
+                    400,
+                    "Only YAML pack files may be edited",
+                )
+
+            target = (
+                staging_dir / requested
+            ).resolve()
+
+            try:
+                target.relative_to(
+                    staging_dir.resolve()
+                )
+            except ValueError:
+                raise HTTPException(
+                    400,
+                    "Invalid pack file path",
+                )
+
+            target.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            target.write_text(
+                content,
+                encoding="utf-8",
+            )
+
+        manifest = validate_pack_directory(
+            staging_dir
+        )
+
+        if str(manifest["id"]).strip() != pack_id:
+            raise HTTPException(
+                400,
+                "Pack id cannot be changed",
+            )
+
+        destination = (
+            INSTALLED_PACKS_PATH / pack_id
+        )
+
+        if destination.exists():
+            backup_dir = (
+                INSTALLED_PACKS_PATH
+                / f".backup-{pack_id}-{int(time.time())}"
+            )
+
+            os.replace(
+                destination,
+                backup_dir,
+            )
+
+        try:
+            os.replace(
+                staging_dir,
+                destination,
+            )
+            staging_dir = None
+        except Exception:
+            if (
+                backup_dir is not None
+                and backup_dir.exists()
+                and not destination.exists()
+            ):
+                os.replace(
+                    backup_dir,
+                    destination,
+                )
+                backup_dir = None
+
+            raise
+
+        if (
+            backup_dir is not None
+            and backup_dir.exists()
+        ):
+            shutil.rmtree(
+                backup_dir,
+                ignore_errors=True,
+            )
+            backup_dir = None
+
+        return {
+            "ok": True,
+            "id": pack_id,
+            "version": str(manifest["version"]),
+            "saved": True,
+        }
+
+    finally:
+        if (
+            staging_dir is not None
+            and staging_dir.exists()
+        ):
+            shutil.rmtree(
+                staging_dir,
+                ignore_errors=True,
+            )
+
+        if (
+            backup_dir is not None
+            and backup_dir.exists()
+        ):
+            shutil.rmtree(
+                backup_dir,
+                ignore_errors=True,
+            )
+
+
+@app.post("/api/v1/packs/{pack_id}/validate")
+def validate_pack_changes(
+    pack_id: str,
+    payload: PackFilesPayload,
+):
+    # Future permission:
+    # packs.edit
+
+    pack_dir = get_pack_dir(pack_id)
+
+    if not payload.files:
+        raise HTTPException(
+            400,
+            "No pack files supplied",
+        )
+
+    with tempfile.TemporaryDirectory(
+        prefix=f"ferpek-validate-{pack_id}-"
+    ) as temporary:
+        temporary_dir = Path(temporary)
+
+        for source in pack_dir.rglob("*"):
+            if not source.is_file():
+                continue
+
+            if source.is_symlink():
+                continue
+
+            relative = source.relative_to(
+                pack_dir
+            )
+
+            destination = (
+                temporary_dir / relative
+            )
+
+            destination.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            shutil.copy2(
+                source,
+                destination,
+            )
+
+        for file_path, content in payload.files.items():
+            requested = Path(file_path)
+
+            if (
+                requested.is_absolute()
+                or ".." in requested.parts
+            ):
+                raise HTTPException(
+                    400,
+                    "Invalid pack file path",
+                )
+
+            if requested.suffix not in {
+                ".yaml",
+                ".yml",
+            }:
+                raise HTTPException(
+                    400,
+                    "Only YAML pack files may be edited",
+                )
+
+            target = (
+                temporary_dir / requested
+            ).resolve()
+
+            try:
+                target.relative_to(
+                    temporary_dir.resolve()
+                )
+            except ValueError:
+                raise HTTPException(
+                    400,
+                    "Invalid pack file path",
+                )
+
+            target.parent.mkdir(
+                parents=True,
+                exist_ok=True,
+            )
+
+            target.write_text(
+                content,
+                encoding="utf-8",
+            )
+
+        manifest = validate_pack_directory(
+            temporary_dir
+        )
+
+        if str(manifest["id"]).strip() != pack_id:
+            raise HTTPException(
+                400,
+                "Pack id cannot be changed",
+            )
+
+    return {
+        "valid": True,
+        "id": pack_id,
+        "version": str(manifest["version"]),
+    }
+
+
+@app.post("/api/v1/packs/install")
+async def install_pack(file: UploadFile = File(...)):
+    # Future permission:
+    # packs.install
+
+    filename = file.filename or ""
+
+    if not filename.lower().endswith(".pack"):
+        raise HTTPException(
+            400,
+            "Uploaded file must use the .pack extension",
+        )
+
+    INSTALLED_PACKS_PATH.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    max_archive_size = 10 * 1024 * 1024
+    max_uncompressed_size = 25 * 1024 * 1024
+    max_files = 250
+
+    archive_path = None
+    staging_dir = None
+    backup_dir = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=".upload-",
+            suffix=".pack",
+            dir=INSTALLED_PACKS_PATH,
+            delete=False,
+        ) as temporary:
+            archive_path = Path(temporary.name)
+            total = 0
+
+            while True:
+                chunk = await file.read(1024 * 1024)
+
+                if not chunk:
+                    break
+
+                total += len(chunk)
+
+                if total > max_archive_size:
+                    raise HTTPException(
+                        413,
+                        "Pack archive exceeds the 10 MB limit",
+                    )
+
+                temporary.write(chunk)
+
+        manifest = validate_pack_archive(
+            archive_path
+        )
+
+        pack_id = str(manifest["id"]).strip()
+        version = str(manifest["version"]).strip()
+
+        with zipfile.ZipFile(
+            archive_path,
+            "r",
+        ) as archive:
+            files = [
+                member
+                for member in archive.infolist()
+                if not member.is_dir()
+            ]
+
+            if len(files) > max_files:
+                raise HTTPException(
+                    400,
+                    "Pack contains too many files",
+                )
+
+            uncompressed_size = sum(
+                member.file_size
+                for member in files
+            )
+
+            if uncompressed_size > max_uncompressed_size:
+                raise HTTPException(
+                    413,
+                    "Pack exceeds the 25 MB uncompressed limit",
+                )
+
+            staging_dir = Path(
+                tempfile.mkdtemp(
+                    prefix=f".install-{pack_id}-",
+                    dir=INSTALLED_PACKS_PATH,
+                )
+            )
+
+            for member in archive.infolist():
+                if member.is_dir():
+                    continue
+
+                destination = (
+                    staging_dir / member.filename
+                )
+
+                destination.parent.mkdir(
+                    parents=True,
+                    exist_ok=True,
+                )
+
+                with archive.open(member) as source:
+                    with destination.open("wb") as target:
+                        shutil.copyfileobj(
+                            source,
+                            target,
+                        )
+
+        installed_manifest = read_pack_manifest(
+            staging_dir
+        )
+
+        if installed_manifest["id"] != pack_id:
+            raise HTTPException(
+                400,
+                "Pack id changed during installation",
+            )
+
+        if not is_pack_server_compatible(
+            installed_manifest
+        ):
+            raise HTTPException(
+                400,
+                f"Pack {pack_id} {version} is not compatible "
+                f"with FERPEK Server {SERVER_VERSION}",
+            )
+
+        destination = (
+            INSTALLED_PACKS_PATH / pack_id
+        )
+
+        if destination.exists():
+            backup_dir = (
+                INSTALLED_PACKS_PATH
+                / f".backup-{pack_id}-{int(time.time())}"
+            )
+
+            os.replace(
+                destination,
+                backup_dir,
+            )
+
+        try:
+            os.replace(
+                staging_dir,
+                destination,
+            )
+            staging_dir = None
+        except Exception:
+            if (
+                backup_dir is not None
+                and backup_dir.exists()
+                and not destination.exists()
+            ):
+                os.replace(
+                    backup_dir,
+                    destination,
+                )
+                backup_dir = None
+
+            raise
+
+        if (
+            backup_dir is not None
+            and backup_dir.exists()
+        ):
+            shutil.rmtree(
+                backup_dir,
+                ignore_errors=True,
+            )
+            backup_dir = None
+
+        return {
+            "ok": True,
+            "id": pack_id,
+            "version": version,
+            "installed": True,
+        }
+
+    finally:
+        await file.close()
+
+        if (
+            archive_path is not None
+            and archive_path.exists()
+        ):
+            archive_path.unlink(
+                missing_ok=True
+            )
+
+        if (
+            staging_dir is not None
+            and staging_dir.exists()
+        ):
+            shutil.rmtree(
+                staging_dir,
+                ignore_errors=True,
+            )
+
+        if (
+            backup_dir is not None
+            and backup_dir.exists()
+        ):
+            shutil.rmtree(
+                backup_dir,
+                ignore_errors=True,
+            )
+
+
+@app.put("/api/v1/packs/{pack_id}/state")
+def set_pack_state(
+    pack_id: str,
+    payload: PackStatePayload,
+):
+    pack_dir = get_pack_dir(pack_id)
+
+    manifest = read_pack_manifest(pack_dir)
+
+    if manifest is None:
+        raise HTTPException(
+            404,
+            "Pack manifest not found",
+        )
+
+    now = int(time.time())
+
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO pack_states (
+                pack_id,
+                enabled,
+                updated_at
+            )
+            VALUES (?, ?, ?)
+            ON CONFLICT(pack_id)
+            DO UPDATE SET
+                enabled = excluded.enabled,
+                updated_at = excluded.updated_at
+            """,
+            (
+                pack_id,
+                1 if payload.enabled else 0,
+                now,
+            ),
+        )
+
+    return {
+        "id": pack_id,
+        "enabled": payload.enabled,
+    }
+
+
+@app.post("/api/v1/packs/{pack_id}/revert")
+def revert_pack_to_official(pack_id: str):
+    # Future permission: packs.edit
+    pack_id = str(pack_id).strip()
+
+    if not pack_id:
+        raise HTTPException(
+            400,
+            "Pack id is required",
+        )
+
+    if not all(
+        char.isalnum() or char in {"-", "_"}
+        for char in pack_id
+    ):
+        raise HTTPException(
+            400,
+            "Invalid pack id",
+        )
+
+    builtin_dir = BUILTIN_PACKS_PATH / pack_id
+    installed_dir = INSTALLED_PACKS_PATH / pack_id
+
+    if (
+        not builtin_dir.is_dir()
+        or builtin_dir.is_symlink()
+    ):
+        raise HTTPException(
+            404,
+            "Official built-in pack not found",
+        )
+
+    builtin_manifest = read_pack_manifest(
+        builtin_dir
+    )
+
+    if (
+        builtin_manifest is None
+        or str(builtin_manifest.get("id", "")).strip()
+        != pack_id
+    ):
+        raise HTTPException(
+            400,
+            "Invalid official built-in pack",
+        )
+
+    if not installed_dir.exists():
+        raise HTTPException(
+            400,
+            "Pack has no local override",
+        )
+
+    if (
+        not installed_dir.is_dir()
+        or installed_dir.is_symlink()
+    ):
+        raise HTTPException(
+            400,
+            "Invalid local pack override",
+        )
+
+    installed_manifest = read_pack_manifest(
+        installed_dir
+    )
+
+    if (
+        installed_manifest is None
+        or str(installed_manifest.get("id", "")).strip()
+        != pack_id
+    ):
+        raise HTTPException(
+            400,
+            "Invalid local pack override",
+        )
+
+    shutil.rmtree(installed_dir)
+
+    return {
+        "ok": True,
+        "id": pack_id,
+        "reverted": True,
+    }
+
+
+@app.delete("/api/v1/packs/{pack_id}")
+def delete_pack(pack_id: str):
+    # Future permission: packs.delete
+    pack_id = str(pack_id).strip()
+
+    if not pack_id:
+        raise HTTPException(
+            400,
+            "Pack id is required",
+        )
+
+    if not all(
+        char.isalnum() or char in {"-", "_"}
+        for char in pack_id
+    ):
+        raise HTTPException(
+            400,
+            "Invalid pack id",
+        )
+
+    builtin_dir = BUILTIN_PACKS_PATH / pack_id
+    installed_dir = INSTALLED_PACKS_PATH / pack_id
+
+    if builtin_dir.is_dir():
+        raise HTTPException(
+            400,
+            "Built-in packs cannot be deleted. "
+            "Use revert to remove a local override.",
+        )
+
+    if not installed_dir.exists():
+        raise HTTPException(
+            404,
+            "Installed pack not found",
+        )
+
+    if (
+        not installed_dir.is_dir()
+        or installed_dir.is_symlink()
+    ):
+        raise HTTPException(
+            400,
+            "Invalid installed pack",
+        )
+
+    manifest = read_pack_manifest(
+        installed_dir
+    )
+
+    if (
+        manifest is None
+        or str(manifest.get("id", "")).strip()
+        != pack_id
+    ):
+        raise HTTPException(
+            400,
+            "Invalid installed pack",
+        )
+
+    shutil.rmtree(installed_dir)
+
+    return {
+        "ok": True,
+        "id": pack_id,
+        "deleted": True,
+    }
+
+
+@app.get("/api/v1/packs")
+def list_packs():
+    packs = []
+
+    for pack_dir in iter_pack_dirs():
+        if not pack_dir.is_dir():
+            continue
+
+        if pack_dir.is_symlink():
+            continue
+
+        manifest = read_pack_manifest(pack_dir)
+
+        if manifest is None:
+            continue
+
+        if not is_pack_allowed(manifest):
+            continue
+
+        if not is_pack_server_compatible(manifest):
+            continue
+
+        rules_dir = pack_dir / "rules"
+
+        rule_count = 0
+
+        if rules_dir.is_dir():
+            rule_count = len(
+                list(
+                    rules_dir.glob("*.yaml")
+                )
+            )
+
+        category = manifest.get(
+            "category",
+            {},
+        )
+
+        if not isinstance(category, dict):
+            category = {}
+
+        packs.append(
+            {
+                "id": manifest["id"],
+                "name": manifest.get(
+                    "name",
+                    manifest["id"],
+                ),
+                "version": str(
+                    manifest["version"]
+                ),
+                "author": manifest.get(
+                    "author",
+                    "",
+                ),
+                "description": manifest.get(
+                    "description",
+                    "",
+                ),
+                "origin": manifest.get(
+                    "origin",
+                    "local",
+                ),
+                "category": {
+                    "id": category.get(
+                        "id",
+                        "other",
+                    ),
+                    "label": category.get(
+                        "label",
+                        "Other",
+                    ),
+                },
+                "sources": manifest.get(
+                    "sources",
+                    [],
+                ),
+                "compatibility": manifest.get(
+                    "compatibility",
+                    {},
+                ),
+                "rule_count": rule_count,
+                "installed": True,
+                "enabled": is_pack_enabled(
+                    manifest["id"]
+                ),
+                "overridden": (
+                    pack_dir.parent == INSTALLED_PACKS_PATH
+                    and (
+                        BUILTIN_PACKS_PATH
+                        / str(manifest["id"])
+                    ).is_dir()
+                ),
+                "capabilities": {
+                    "edit": True,
+                    "revert": (
+                        pack_dir.parent == INSTALLED_PACKS_PATH
+                        and (
+                            BUILTIN_PACKS_PATH
+                            / str(manifest["id"])
+                        ).is_dir()
+                    ),
+                    "delete": (
+                        pack_dir.parent == INSTALLED_PACKS_PATH
+                        and not (
+                            BUILTIN_PACKS_PATH
+                            / str(manifest["id"])
+                        ).is_dir()
+                    ),
+                },
+            }
+        )
+
+    return {
+        "packs": packs,
+    }
+
+
+# ---------------------------------------------------------------------------
+# FERPEK Lens
+# ---------------------------------------------------------------------------
+
+@app.get("/pack-engine.py", include_in_schema=False)
+def download_pack_engine():
+    return FileResponse(
+        PACK_ENGINE_PATH,
+        media_type="text/x-python",
+        filename="pack_engine.py",
+    )
+
+
+@app.get("/api/v1/agent/packs")
+def get_agent_packs(agent=Depends(get_agent)):
+    packs = []
+
+    for pack_dir in iter_pack_dirs():
+        if not pack_dir.is_dir():
+            continue
+
+        if pack_dir.is_symlink():
+            continue
+
+        manifest = read_pack_manifest(pack_dir)
+
+        if manifest is None:
+            continue
+
+        if not is_pack_allowed(manifest):
+            continue
+
+        if not is_pack_enabled(manifest["id"]):
+            continue
+
+        if not is_pack_server_compatible(manifest):
+            continue
+
+        if not is_pack_agent_compatible(
+            manifest,
+            str(agent.get("agent_version") or ""),
+        ):
+            continue
+
+        pack_id = manifest["id"]
+        version = manifest["version"]
+
+        files = {}
+
+        for file_path in sorted(
+            pack_dir.rglob("*.yaml")
+        ):
+            if not file_path.is_file():
+                continue
+
+            if file_path.is_symlink():
+                continue
+
+            try:
+                resolved = file_path.resolve()
+                resolved.relative_to(
+                    pack_dir.resolve()
+                )
+            except ValueError:
+                continue
+
+            relative_path = file_path.relative_to(
+                pack_dir
+            ).as_posix()
+
+            try:
+                content = file_path.read_text(
+                    encoding="utf-8"
+                )
+
+                # Validate every YAML file before sending it.
+                yaml.safe_load(content)
+
+            except Exception as exc:
+                raise HTTPException(
+                    500,
+                    (
+                        f"Invalid YAML in "
+                        f"{pack_id}/{relative_path}: {exc}"
+                    ),
+                )
+
+            files[relative_path] = content
+
+        packs.append(
+            {
+                "id": pack_id,
+                "name": manifest.get(
+                    "name",
+                    pack_id,
+                ),
+                "version": str(version),
+                "files": files,
+            }
+        )
+
+    return {
+        "packs": packs,
+    }

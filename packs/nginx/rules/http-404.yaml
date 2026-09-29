@@ -1,0 +1,19 @@
+id: nginx.http_404
+
+name: HTTP resource not found
+
+source_family: web-access
+
+match:
+  regex: '^(?P<ip>[0-9a-fA-F:.]+) .* "(?P<method>[A-Z]+) (?P<path>\S+) HTTP/[0-9.]+" 404 '
+
+relevant:
+  severity: warning
+  title: HTTP resource not found
+  detail: "{method} {path} returned HTTP 404 to {ip}."
+
+fields:
+  source_ip: "{ip}"
+  method: "{method}"
+  path: "{path}"
+  status: "404"
