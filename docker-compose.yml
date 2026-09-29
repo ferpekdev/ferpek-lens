@@ -1,3 +1,5 @@
+name: rosetta-server-agent
+
 services:
   server:
     build:
