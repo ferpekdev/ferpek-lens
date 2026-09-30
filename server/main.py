@@ -27,7 +27,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 from fastapi.responses import FileResponse
-from fastapi import Depends, FastAPI, File, Header, HTTPException, Query, UploadFile
+from fastapi import Cookie, Depends, FastAPI, File, Header, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel, Field
 import json
 
@@ -214,6 +214,101 @@ def init_db():
             )
         """)
 
+        # ------------------------------------------------------------------
+        # Web authentication / RBAC
+        # ------------------------------------------------------------------
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                email TEXT,
+                auth_type TEXT NOT NULL DEFAULT 'local',
+                password_hash TEXT,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                last_login_at INTEGER
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS groups (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL UNIQUE,
+                description TEXT,
+                builtin INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS permissions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                permission_key TEXT NOT NULL UNIQUE,
+                description TEXT NOT NULL
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS user_groups (
+                user_id INTEGER NOT NULL,
+                group_id INTEGER NOT NULL,
+                PRIMARY KEY(user_id, group_id),
+                FOREIGN KEY(user_id)
+                    REFERENCES users(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(group_id)
+                    REFERENCES groups(id)
+                    ON DELETE CASCADE
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS group_permissions (
+                group_id INTEGER NOT NULL,
+                permission_id INTEGER NOT NULL,
+                PRIMARY KEY(group_id, permission_id),
+                FOREIGN KEY(group_id)
+                    REFERENCES groups(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(permission_id)
+                    REFERENCES permissions(id)
+                    ON DELETE CASCADE
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS web_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                token_hash TEXT NOT NULL UNIQUE,
+                user_id INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                expires_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL,
+                FOREIGN KEY(user_id)
+                    REFERENCES users(id)
+                    ON DELETE CASCADE
+            )
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_web_sessions_token_hash
+            ON web_sessions(token_hash)
+        """)
+
+        conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_web_sessions_user_id
+            ON web_sessions(user_id)
+        """)
+
+        conn.execute("""
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_nocase
+            ON users(username COLLATE NOCASE)
+        """)
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS pack_states (
                 pack_id TEXT PRIMARY KEY,
@@ -223,6 +318,84 @@ def init_db():
         """)
 
         now = int(time.time())
+
+        rbac_permissions = {
+            "users.view": "View users",
+            "users.manage": "Create, edit and disable users",
+            "groups.view": "View groups and permissions",
+            "groups.manage": "Create and edit groups and permissions",
+
+            "hosts.view": "View monitored hosts",
+            "hosts.manage": "Change host and source configuration",
+            "hosts.delete": "Delete monitored hosts",
+
+            "findings.view": "View findings",
+            "findings.resolve": "Resolve findings",
+
+            "logs.view": "View raw and relevant log activity",
+
+            "packs.view": "View installed packs",
+            "packs.manage": "Install, edit, enable and remove packs",
+
+            "settings.view": "View FERPEK settings",
+            "settings.manage": "Change general FERPEK settings",
+            "settings.auth_manage": "Manage authentication providers",
+        }
+
+        for permission_key, description in rbac_permissions.items():
+            conn.execute(
+                """
+                INSERT INTO permissions
+                    (permission_key, description)
+                VALUES (?, ?)
+                ON CONFLICT(permission_key)
+                DO UPDATE SET
+                    description = excluded.description
+                """,
+                (
+                    permission_key,
+                    description,
+                ),
+            )
+
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO groups
+                (
+                    name,
+                    description,
+                    builtin,
+                    created_at,
+                    updated_at
+                )
+            VALUES (?, ?, 1, ?, ?)
+            """,
+            (
+                "Administrators",
+                "Full access to FERPEK",
+                now,
+                now,
+            ),
+        )
+
+        administrators_group = conn.execute(
+            """
+            SELECT id
+            FROM groups
+            WHERE name = 'Administrators'
+            """
+        ).fetchone()
+
+        if administrators_group:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO group_permissions
+                    (group_id, permission_id)
+                SELECT ?, id
+                FROM permissions
+                """,
+                (administrators_group["id"],),
+            )
 
         conn.execute(
             """
@@ -534,6 +707,150 @@ def on_shutdown():
 # API models
 # ---------------------------------------------------------------------------
 
+def hash_local_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+
+    n = 16384
+    r = 8
+    p = 1
+
+    digest = hashlib.scrypt(
+        password.encode("utf-8"),
+        salt=salt,
+        n=n,
+        r=r,
+        p=p,
+        dklen=64,
+    )
+
+    return (
+        f"scrypt${n}${r}${p}$"
+        f"{salt.hex()}${digest.hex()}"
+    )
+
+
+def verify_local_password(
+    password: str,
+    stored_hash: str,
+) -> bool:
+    try:
+        algorithm, n, r, p, salt_hex, digest_hex = (
+            stored_hash.split("$", 5)
+        )
+
+        if algorithm != "scrypt":
+            return False
+
+        digest = hashlib.scrypt(
+            password.encode("utf-8"),
+            salt=bytes.fromhex(salt_hex),
+            n=int(n),
+            r=int(r),
+            p=int(p),
+            dklen=len(bytes.fromhex(digest_hex)),
+        )
+
+        return secrets.compare_digest(
+            digest,
+            bytes.fromhex(digest_hex),
+        )
+    except Exception:
+        return False
+
+
+def hash_session_token(token: str) -> str:
+    return hashlib.sha256(
+        token.encode("utf-8")
+    ).hexdigest()
+
+
+class FirstRunSetup(BaseModel):
+    username: str = Field(
+        min_length=3,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9._-]+$",
+    )
+    display_name: str = Field(
+        default="",
+        max_length=128,
+    )
+    email: str = Field(
+        default="",
+        max_length=254,
+    )
+    password: str = Field(
+        min_length=12,
+        max_length=256,
+    )
+
+
+class LoginRequest(BaseModel):
+    username: str = Field(
+        min_length=1,
+        max_length=64,
+    )
+    password: str = Field(
+        min_length=1,
+        max_length=256,
+    )
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str = Field(
+        min_length=1,
+        max_length=256,
+    )
+    new_password: str = Field(
+        min_length=12,
+        max_length=256,
+    )
+
+
+class UserCreate(BaseModel):
+    username: str = Field(
+        min_length=3,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9._-]+$",
+    )
+    display_name: str = Field(
+        default="",
+        max_length=128,
+    )
+    email: str = Field(
+        default="",
+        max_length=254,
+    )
+    password: str = Field(
+        min_length=12,
+        max_length=256,
+    )
+    group_ids: list[int] = Field(default_factory=list)
+
+
+class UserUpdate(BaseModel):
+    username: Optional[str] = Field(
+        default=None,
+        min_length=3,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9._-]+$",
+    )
+    display_name: Optional[str] = Field(
+        default=None,
+        max_length=128,
+    )
+    email: Optional[str] = Field(
+        default=None,
+        max_length=254,
+    )
+    password: Optional[str] = Field(
+        default=None,
+        min_length=12,
+        max_length=256,
+    )
+    enabled: Optional[bool] = None
+    group_ids: Optional[list[int]] = None
+
+
 class PackSettings(BaseModel):
     allow_community_packs: bool = False
     allow_local_packs: bool = True
@@ -713,10 +1030,1507 @@ def hash_enrollment_token(token: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Web authentication - first run
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/auth/setup")
+def get_auth_setup_status():
+    with db() as conn:
+        row = conn.execute(
+            "SELECT COUNT(*) AS total FROM users"
+        ).fetchone()
+
+    return {
+        "setup_required": row["total"] == 0,
+    }
+
+
+@app.post("/api/v1/auth/setup")
+def complete_auth_setup(setup: FirstRunSetup):
+    username = setup.username.strip().lower()
+    display_name = setup.display_name.strip()
+    email = setup.email.strip()
+
+    with db() as conn:
+        # Prevent two concurrent requests from both becoming
+        # the first administrator.
+        conn.execute("BEGIN IMMEDIATE")
+
+        user_count = conn.execute(
+            "SELECT COUNT(*) AS total FROM users"
+        ).fetchone()["total"]
+
+        if user_count != 0:
+            raise HTTPException(
+                409,
+                "FERPEK initial setup has already been completed",
+            )
+
+        administrators = conn.execute(
+            """
+            SELECT id
+            FROM groups
+            WHERE name = 'Administrators'
+            """
+        ).fetchone()
+
+        if administrators is None:
+            raise HTTPException(
+                500,
+                "Administrators group is missing",
+            )
+
+        now = int(time.time())
+        password_hash = hash_local_password(
+            setup.password
+        )
+
+        cursor = conn.execute(
+            """
+            INSERT INTO users
+                (
+                    username,
+                    display_name,
+                    email,
+                    auth_type,
+                    password_hash,
+                    enabled,
+                    created_at,
+                    updated_at
+                )
+            VALUES (?, ?, ?, 'local', ?, 1, ?, ?)
+            """,
+            (
+                username,
+                display_name,
+                email,
+                password_hash,
+                now,
+                now,
+            ),
+        )
+
+        user_id = cursor.lastrowid
+
+        conn.execute(
+            """
+            INSERT INTO user_groups
+                (user_id, group_id)
+            VALUES (?, ?)
+            """,
+            (
+                user_id,
+                administrators["id"],
+            ),
+        )
+
+    return {
+        "ok": True,
+        "user": {
+            "id": user_id,
+            "username": username,
+            "display_name": display_name,
+            "email": email,
+            "auth_type": "local",
+            "groups": ["Administrators"],
+        },
+    }
+
+
+@app.post("/api/v1/auth/login")
+def login(
+    credentials: LoginRequest,
+    response: Response,
+):
+    username = credentials.username.strip()
+
+    with db() as conn:
+        user = conn.execute(
+            """
+            SELECT *
+            FROM users
+            WHERE username = ? COLLATE NOCASE
+            """,
+            (username,),
+        ).fetchone()
+
+        if (
+            user is None
+            or not bool(user["enabled"])
+            or user["auth_type"] != "local"
+            or not user["password_hash"]
+            or not verify_local_password(
+                credentials.password,
+                user["password_hash"],
+            )
+        ):
+            raise HTTPException(
+                401,
+                "Invalid username or password",
+            )
+
+        token = secrets.token_urlsafe(48)
+        token_hash = hash_session_token(token)
+
+        now = int(time.time())
+        expires_at = now + (12 * 60 * 60)
+
+        conn.execute(
+            """
+            INSERT INTO web_sessions
+                (
+                    token_hash,
+                    user_id,
+                    created_at,
+                    expires_at,
+                    last_seen_at
+                )
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                token_hash,
+                user["id"],
+                now,
+                expires_at,
+                now,
+            ),
+        )
+
+        conn.execute(
+            """
+            UPDATE users
+            SET last_login_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                now,
+                now,
+                user["id"],
+            ),
+        )
+
+    response.set_cookie(
+        key="ferpek_session",
+        value=token,
+        httponly=True,
+        secure=False,
+        samesite="lax",
+        max_age=12 * 60 * 60,
+        path="/",
+    )
+
+    return {
+        "ok": True,
+        "user": {
+            "id": user["id"],
+            "username": user["username"],
+            "display_name": user["display_name"],
+            "email": user["email"],
+            "auth_type": user["auth_type"],
+        },
+    }
+
+
+def get_web_user(
+    ferpek_session: Optional[str] = Cookie(None),
+):
+    if not ferpek_session:
+        raise HTTPException(
+            401,
+            "Not authenticated",
+        )
+
+    token_hash = hash_session_token(
+        ferpek_session
+    )
+    now = int(time.time())
+
+    with db() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                users.*,
+                web_sessions.id AS session_id,
+                web_sessions.expires_at
+            FROM web_sessions
+            JOIN users
+              ON users.id = web_sessions.user_id
+            WHERE web_sessions.token_hash = ?
+            """,
+            (token_hash,),
+        ).fetchone()
+
+        if (
+            row is None
+            or not bool(row["enabled"])
+            or row["expires_at"] <= now
+        ):
+            if row is not None:
+                conn.execute(
+                    """
+                    DELETE FROM web_sessions
+                    WHERE id = ?
+                    """,
+                    (row["session_id"],),
+                )
+
+            raise HTTPException(
+                401,
+                "Session expired or invalid",
+            )
+
+        conn.execute(
+            """
+            UPDATE web_sessions
+            SET last_seen_at = ?
+            WHERE id = ?
+            """,
+            (
+                now,
+                row["session_id"],
+            ),
+        )
+
+        groups = [
+            group["name"]
+            for group in conn.execute(
+                """
+                SELECT groups.name
+                FROM groups
+                JOIN user_groups
+                  ON user_groups.group_id = groups.id
+                WHERE user_groups.user_id = ?
+                ORDER BY groups.name
+                """,
+                (row["id"],),
+            ).fetchall()
+        ]
+
+        permissions = [
+            permission["permission_key"]
+            for permission in conn.execute(
+                """
+                SELECT DISTINCT permissions.permission_key
+                FROM permissions
+                JOIN group_permissions
+                  ON group_permissions.permission_id = permissions.id
+                JOIN user_groups
+                  ON user_groups.group_id = group_permissions.group_id
+                WHERE user_groups.user_id = ?
+                ORDER BY permissions.permission_key
+                """,
+                (row["id"],),
+            ).fetchall()
+        ]
+
+    return {
+        "id": row["id"],
+        "username": row["username"],
+        "display_name": row["display_name"],
+        "email": row["email"],
+        "auth_type": row["auth_type"],
+        "groups": groups,
+        "permissions": permissions,
+    }
+
+
+def require_permission(permission_key: str):
+    def dependency(
+        user: dict = Depends(get_web_user),
+    ):
+        if permission_key not in user["permissions"]:
+            raise HTTPException(
+                403,
+                f"Missing permission: {permission_key}",
+            )
+
+        return user
+
+    return dependency
+
+
+@app.post("/api/v1/auth/change-password")
+def change_password(
+    payload: ChangePasswordRequest,
+    current_user: dict = Depends(get_web_user),
+    ferpek_session: Optional[str] = Cookie(None),
+):
+    if current_user["auth_type"] != "local":
+        raise HTTPException(
+            400,
+            "Password is managed by the authentication provider",
+        )
+
+    if not ferpek_session:
+        raise HTTPException(
+            401,
+            "Not authenticated",
+        )
+
+    now = int(time.time())
+    current_session_hash = hash_session_token(
+        ferpek_session
+    )
+
+    with db() as conn:
+        user = conn.execute(
+            """
+            SELECT
+                id,
+                password_hash
+            FROM users
+            WHERE id = ?
+            """,
+            (current_user["id"],),
+        ).fetchone()
+
+        if user is None:
+            raise HTTPException(
+                404,
+                "User not found",
+            )
+
+        if not verify_local_password(
+            payload.current_password,
+            user["password_hash"],
+        ):
+            raise HTTPException(
+                400,
+                "Current password is incorrect",
+            )
+
+        if verify_local_password(
+            payload.new_password,
+            user["password_hash"],
+        ):
+            raise HTTPException(
+                400,
+                "New password must be different from the current password",
+            )
+
+        conn.execute(
+            """
+            UPDATE users
+            SET
+                password_hash = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                hash_local_password(
+                    payload.new_password
+                ),
+                now,
+                current_user["id"],
+            ),
+        )
+
+        conn.execute(
+            """
+            DELETE FROM web_sessions
+            WHERE user_id = ?
+              AND token_hash != ?
+            """,
+            (
+                current_user["id"],
+                current_session_hash,
+            ),
+        )
+
+    return {
+        "ok": True,
+    }
+
+
+@app.get("/api/v1/auth/me")
+def auth_me(
+    user: dict = Depends(get_web_user),
+):
+    return user
+
+
+@app.post("/api/v1/auth/logout")
+def logout(
+    response: Response,
+    ferpek_session: Optional[str] = Cookie(None),
+):
+    if ferpek_session:
+        token_hash = hash_session_token(
+            ferpek_session
+        )
+
+        with db() as conn:
+            conn.execute(
+                """
+                DELETE FROM web_sessions
+                WHERE token_hash = ?
+                """,
+                (token_hash,),
+            )
+
+    response.delete_cookie(
+        key="ferpek_session",
+        path="/",
+    )
+
+    return {
+        "ok": True,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Users / Groups / Permissions
+# ---------------------------------------------------------------------------
+
+@app.get(
+    "/api/v1/users",
+    dependencies=[
+        Depends(require_permission("users.view"))
+    ],
+)
+def list_users():
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                username,
+                display_name,
+                email,
+                auth_type,
+                enabled,
+                created_at,
+                updated_at,
+                last_login_at
+            FROM users
+            ORDER BY username COLLATE NOCASE
+            """
+        ).fetchall()
+
+        users = []
+
+        for row in rows:
+            groups = [
+                group["name"]
+                for group in conn.execute(
+                    """
+                    SELECT groups.name
+                    FROM groups
+                    JOIN user_groups
+                      ON user_groups.group_id = groups.id
+                    WHERE user_groups.user_id = ?
+                    ORDER BY groups.name
+                    """,
+                    (row["id"],),
+                ).fetchall()
+            ]
+
+            users.append(
+                {
+                    "id": row["id"],
+                    "username": row["username"],
+                    "display_name": row["display_name"],
+                    "email": row["email"],
+                    "auth_type": row["auth_type"],
+                    "enabled": bool(row["enabled"]),
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                    "last_login_at": row["last_login_at"],
+                    "groups": groups,
+                }
+            )
+
+    return {
+        "users": users,
+    }
+
+
+@app.post(
+    "/api/v1/users",
+    dependencies=[
+        Depends(require_permission("users.manage"))
+    ],
+)
+def create_user(
+    payload: UserCreate,
+):
+    username = payload.username.strip().lower()
+    display_name = payload.display_name.strip()
+    email = payload.email.strip()
+    group_ids = list(dict.fromkeys(payload.group_ids))
+    now = int(time.time())
+
+    with db() as conn:
+        existing = conn.execute(
+            """
+            SELECT id
+            FROM users
+            WHERE username = ? COLLATE NOCASE
+            """,
+            (username,),
+        ).fetchone()
+
+        if existing is not None:
+            raise HTTPException(
+                409,
+                "Username already exists",
+            )
+
+        if group_ids:
+            placeholders = ",".join("?" for _ in group_ids)
+
+            valid_group_ids = {
+                row["id"]
+                for row in conn.execute(
+                    f"""
+                    SELECT id
+                    FROM groups
+                    WHERE id IN ({placeholders})
+                    """,
+                    group_ids,
+                ).fetchall()
+            }
+
+            if valid_group_ids != set(group_ids):
+                raise HTTPException(
+                    400,
+                    "One or more groups do not exist",
+                )
+
+        cursor = conn.execute(
+            """
+            INSERT INTO users
+                (
+                    username,
+                    display_name,
+                    email,
+                    auth_type,
+                    password_hash,
+                    enabled,
+                    created_at,
+                    updated_at
+                )
+            VALUES (?, ?, ?, 'local', ?, 1, ?, ?)
+            """,
+            (
+                username,
+                display_name,
+                email,
+                hash_local_password(payload.password),
+                now,
+                now,
+            ),
+        )
+
+        user_id = cursor.lastrowid
+
+        for group_id in group_ids:
+            conn.execute(
+                """
+                INSERT INTO user_groups
+                    (user_id, group_id)
+                VALUES (?, ?)
+                """,
+                (
+                    user_id,
+                    group_id,
+                ),
+            )
+
+        groups = [
+            row["name"]
+            for row in conn.execute(
+                """
+                SELECT groups.name
+                FROM groups
+                JOIN user_groups
+                  ON user_groups.group_id = groups.id
+                WHERE user_groups.user_id = ?
+                ORDER BY groups.name
+                """,
+                (user_id,),
+            ).fetchall()
+        ]
+
+    return {
+        "id": user_id,
+        "username": username,
+        "display_name": display_name,
+        "email": email,
+        "auth_type": "local",
+        "enabled": True,
+        "groups": groups,
+        "created_at": now,
+        "updated_at": now,
+        "last_login_at": None,
+    }
+
+
+@app.patch(
+    "/api/v1/users/{user_id}",
+)
+def update_user(
+    user_id: int,
+    payload: UserUpdate,
+    current_user: dict = Depends(
+        require_permission("users.manage")
+    ),
+):
+    now = int(time.time())
+
+    with db() as conn:
+        user = conn.execute(
+            """
+            SELECT *
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+
+        if user is None:
+            raise HTTPException(
+                404,
+                "User not found",
+            )
+
+        if user["auth_type"] != "local":
+            raise HTTPException(
+                400,
+                "Directory users cannot be edited as local users",
+            )
+
+        username = (
+            payload.username.strip().lower()
+            if payload.username is not None
+            else user["username"]
+        )
+
+        display_name = (
+            payload.display_name.strip()
+            if payload.display_name is not None
+            else user["display_name"]
+        )
+
+        email = (
+            payload.email.strip()
+            if payload.email is not None
+            else user["email"]
+        )
+
+        enabled = (
+            payload.enabled
+            if payload.enabled is not None
+            else bool(user["enabled"])
+        )
+
+        if (
+            user_id == current_user["id"]
+            and not enabled
+        ):
+            raise HTTPException(
+                400,
+                "You cannot disable your own account",
+            )
+
+        duplicate = conn.execute(
+            """
+            SELECT id
+            FROM users
+            WHERE username = ? COLLATE NOCASE
+              AND id != ?
+            """,
+            (
+                username,
+                user_id,
+            ),
+        ).fetchone()
+
+        if duplicate is not None:
+            raise HTTPException(
+                409,
+                "Username already exists",
+            )
+
+        current_group_ids = {
+            row["id"]
+            for row in conn.execute(
+                """
+                SELECT groups.id
+                FROM groups
+                JOIN user_groups
+                  ON user_groups.group_id = groups.id
+                WHERE user_groups.user_id = ?
+                """,
+                (user_id,),
+            ).fetchall()
+        }
+
+        if payload.group_ids is None:
+            new_group_ids = current_group_ids
+        else:
+            new_group_ids = set(payload.group_ids)
+
+            if new_group_ids:
+                placeholders = ",".join(
+                    "?" for _ in new_group_ids
+                )
+
+                valid_group_ids = {
+                    row["id"]
+                    for row in conn.execute(
+                        f"""
+                        SELECT id
+                        FROM groups
+                        WHERE id IN ({placeholders})
+                        """,
+                        tuple(new_group_ids),
+                    ).fetchall()
+                }
+
+                if valid_group_ids != new_group_ids:
+                    raise HTTPException(
+                        400,
+                        "One or more groups do not exist",
+                    )
+
+        administrators = conn.execute(
+            """
+            SELECT id
+            FROM groups
+            WHERE name = 'Administrators'
+            """
+        ).fetchone()
+
+        administrator_group_id = (
+            administrators["id"]
+            if administrators is not None
+            else None
+        )
+
+        is_administrator = (
+            administrator_group_id is not None
+            and administrator_group_id
+            in current_group_ids
+        )
+
+        remains_administrator = (
+            administrator_group_id is not None
+            and administrator_group_id
+            in new_group_ids
+            and enabled
+        )
+
+        if is_administrator and not remains_administrator:
+            other_active_admins = conn.execute(
+                """
+                SELECT COUNT(DISTINCT users.id) AS total
+                FROM users
+                JOIN user_groups
+                  ON user_groups.user_id = users.id
+                JOIN groups
+                  ON groups.id = user_groups.group_id
+                WHERE groups.name = 'Administrators'
+                  AND users.enabled = 1
+                  AND users.id != ?
+                """,
+                (user_id,),
+            ).fetchone()["total"]
+
+            if other_active_admins == 0:
+                raise HTTPException(
+                    400,
+                    "Cannot remove or disable the last active administrator",
+                )
+
+        password_hash = user["password_hash"]
+        password_changed = payload.password is not None
+
+        if password_changed:
+            password_hash = hash_local_password(
+                payload.password
+            )
+
+        conn.execute(
+            """
+            UPDATE users
+            SET
+                username = ?,
+                display_name = ?,
+                email = ?,
+                password_hash = ?,
+                enabled = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                username,
+                display_name,
+                email,
+                password_hash,
+                1 if enabled else 0,
+                now,
+                user_id,
+            ),
+        )
+
+        if payload.group_ids is not None:
+            conn.execute(
+                """
+                DELETE FROM user_groups
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            )
+
+            for group_id in sorted(new_group_ids):
+                conn.execute(
+                    """
+                    INSERT INTO user_groups
+                        (user_id, group_id)
+                    VALUES (?, ?)
+                    """,
+                    (
+                        user_id,
+                        group_id,
+                    ),
+                )
+
+        if not enabled or password_changed:
+            conn.execute(
+                """
+                DELETE FROM web_sessions
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            )
+
+        groups = [
+            row["name"]
+            for row in conn.execute(
+                """
+                SELECT groups.name
+                FROM groups
+                JOIN user_groups
+                  ON user_groups.group_id = groups.id
+                WHERE user_groups.user_id = ?
+                ORDER BY groups.name
+                """,
+                (user_id,),
+            ).fetchall()
+        ]
+
+        updated = conn.execute(
+            """
+            SELECT
+                id,
+                username,
+                display_name,
+                email,
+                auth_type,
+                enabled,
+                created_at,
+                updated_at,
+                last_login_at
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+
+    return {
+        "id": updated["id"],
+        "username": updated["username"],
+        "display_name": updated["display_name"],
+        "email": updated["email"],
+        "auth_type": updated["auth_type"],
+        "enabled": bool(updated["enabled"]),
+        "created_at": updated["created_at"],
+        "updated_at": updated["updated_at"],
+        "last_login_at": updated["last_login_at"],
+        "groups": groups,
+    }
+
+
+@app.delete(
+    "/api/v1/users/{user_id}",
+)
+def delete_user(
+    user_id: int,
+    current_user: dict = Depends(
+        require_permission("users.manage")
+    ),
+):
+    if user_id == current_user["id"]:
+        raise HTTPException(
+            400,
+            "You cannot delete your own account",
+        )
+
+    with db() as conn:
+        user = conn.execute(
+            """
+            SELECT *
+            FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        ).fetchone()
+
+        if user is None:
+            raise HTTPException(
+                404,
+                "User not found",
+            )
+
+        is_administrator = conn.execute(
+            """
+            SELECT 1
+            FROM user_groups
+            JOIN groups
+              ON groups.id = user_groups.group_id
+            WHERE user_groups.user_id = ?
+              AND groups.name = 'Administrators'
+            """,
+            (user_id,),
+        ).fetchone() is not None
+
+        if is_administrator and bool(user["enabled"]):
+            other_active_admins = conn.execute(
+                """
+                SELECT COUNT(DISTINCT users.id) AS total
+                FROM users
+                JOIN user_groups
+                  ON user_groups.user_id = users.id
+                JOIN groups
+                  ON groups.id = user_groups.group_id
+                WHERE groups.name = 'Administrators'
+                  AND users.enabled = 1
+                  AND users.id != ?
+                """,
+                (user_id,),
+            ).fetchone()["total"]
+
+            if other_active_admins == 0:
+                raise HTTPException(
+                    400,
+                    "Cannot delete the last active administrator",
+                )
+
+        conn.execute(
+            """
+            DELETE FROM users
+            WHERE id = ?
+            """,
+            (user_id,),
+        )
+
+    return {
+        "ok": True,
+    }
+
+
+
+class GroupCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    description: str = Field(default="", max_length=500)
+    permissions: list[str] = Field(default_factory=list)
+
+
+class GroupUpdate(BaseModel):
+    name: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+    )
+    description: Optional[str] = Field(
+        default=None,
+        max_length=500,
+    )
+    permissions: Optional[list[str]] = None
+
+
+def get_group_payload(
+    conn: sqlite3.Connection,
+    group_id: int,
+):
+    row = conn.execute(
+        """
+        SELECT
+            id,
+            name,
+            description,
+            builtin,
+            created_at,
+            updated_at
+        FROM groups
+        WHERE id = ?
+        """,
+        (group_id,),
+    ).fetchone()
+
+    if row is None:
+        return None
+
+    permissions = [
+        permission["permission_key"]
+        for permission in conn.execute(
+            """
+            SELECT permissions.permission_key
+            FROM permissions
+            JOIN group_permissions
+              ON group_permissions.permission_id =
+                 permissions.id
+            WHERE group_permissions.group_id = ?
+            ORDER BY permissions.permission_key
+            """,
+            (group_id,),
+        ).fetchall()
+    ]
+
+    member_count = conn.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM user_groups
+        WHERE group_id = ?
+        """,
+        (group_id,),
+    ).fetchone()["count"]
+
+    return {
+        "id": row["id"],
+        "name": row["name"],
+        "description": row["description"],
+        "builtin": bool(row["builtin"]),
+        "member_count": member_count,
+        "permissions": permissions,
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def validate_group_permissions(
+    conn: sqlite3.Connection,
+    permission_keys: list[str],
+):
+    unique_keys = sorted(set(permission_keys))
+
+    if not unique_keys:
+        return []
+
+    placeholders = ",".join(
+        "?" for _ in unique_keys
+    )
+
+    rows = conn.execute(
+        f"""
+        SELECT id, permission_key
+        FROM permissions
+        WHERE permission_key IN ({placeholders})
+        """,
+        unique_keys,
+    ).fetchall()
+
+    found = {
+        row["permission_key"]: row["id"]
+        for row in rows
+    }
+
+    missing = [
+        key
+        for key in unique_keys
+        if key not in found
+    ]
+
+    if missing:
+        raise HTTPException(
+            400,
+            "Unknown permissions: "
+            + ", ".join(missing),
+        )
+
+    return [
+        (found[key], key)
+        for key in unique_keys
+    ]
+
+
+@app.post(
+    "/api/v1/groups",
+    dependencies=[
+        Depends(require_permission("groups.manage"))
+    ],
+)
+def create_group(req: GroupCreate):
+    now = int(time.time())
+    name = req.name.strip()
+    description = req.description.strip()
+
+    if not name:
+        raise HTTPException(
+            400,
+            "Group name is required",
+        )
+
+    with db() as conn:
+        duplicate = conn.execute(
+            """
+            SELECT id
+            FROM groups
+            WHERE name = ? COLLATE NOCASE
+            """,
+            (name,),
+        ).fetchone()
+
+        if duplicate is not None:
+            raise HTTPException(
+                409,
+                "A group with this name already exists",
+            )
+
+        validated_permissions = (
+            validate_group_permissions(
+                conn,
+                req.permissions,
+            )
+        )
+
+        cur = conn.execute(
+            """
+            INSERT INTO groups
+                (
+                    name,
+                    description,
+                    builtin,
+                    created_at,
+                    updated_at
+                )
+            VALUES (?, ?, 0, ?, ?)
+            """,
+            (
+                name,
+                description,
+                now,
+                now,
+            ),
+        )
+
+        group_id = cur.lastrowid
+
+        for permission_id, _ in validated_permissions:
+            conn.execute(
+                """
+                INSERT INTO group_permissions
+                    (
+                        group_id,
+                        permission_id
+                    )
+                VALUES (?, ?)
+                """,
+                (
+                    group_id,
+                    permission_id,
+                ),
+            )
+
+        return get_group_payload(
+            conn,
+            group_id,
+        )
+
+
+@app.patch(
+    "/api/v1/groups/{group_id}",
+    dependencies=[
+        Depends(require_permission("groups.manage"))
+    ],
+)
+def update_group(
+    group_id: int,
+    req: GroupUpdate,
+):
+    now = int(time.time())
+
+    with db() as conn:
+        group = conn.execute(
+            """
+            SELECT *
+            FROM groups
+            WHERE id = ?
+            """,
+            (group_id,),
+        ).fetchone()
+
+        if group is None:
+            raise HTTPException(
+                404,
+                "Group not found",
+            )
+
+        if bool(group["builtin"]):
+            raise HTTPException(
+                400,
+                "Built-in groups cannot be modified",
+            )
+
+        new_name = (
+            req.name.strip()
+            if req.name is not None
+            else group["name"]
+        )
+
+        if not new_name:
+            raise HTTPException(
+                400,
+                "Group name is required",
+            )
+
+        duplicate = conn.execute(
+            """
+            SELECT id
+            FROM groups
+            WHERE name = ? COLLATE NOCASE
+              AND id != ?
+            """,
+            (
+                new_name,
+                group_id,
+            ),
+        ).fetchone()
+
+        if duplicate is not None:
+            raise HTTPException(
+                409,
+                "A group with this name already exists",
+            )
+
+        new_description = (
+            req.description.strip()
+            if req.description is not None
+            else group["description"]
+        )
+
+        validated_permissions = None
+
+        if req.permissions is not None:
+            validated_permissions = (
+                validate_group_permissions(
+                    conn,
+                    req.permissions,
+                )
+            )
+
+        conn.execute(
+            """
+            UPDATE groups
+            SET
+                name = ?,
+                description = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                new_name,
+                new_description,
+                now,
+                group_id,
+            ),
+        )
+
+        if validated_permissions is not None:
+            conn.execute(
+                """
+                DELETE FROM group_permissions
+                WHERE group_id = ?
+                """,
+                (group_id,),
+            )
+
+            for permission_id, _ in validated_permissions:
+                conn.execute(
+                    """
+                    INSERT INTO group_permissions
+                        (
+                            group_id,
+                            permission_id
+                        )
+                    VALUES (?, ?)
+                    """,
+                    (
+                        group_id,
+                        permission_id,
+                    ),
+                )
+
+        return get_group_payload(
+            conn,
+            group_id,
+        )
+
+
+@app.delete(
+    "/api/v1/groups/{group_id}",
+    dependencies=[
+        Depends(require_permission("groups.manage"))
+    ],
+)
+def delete_group(group_id: int):
+    with db() as conn:
+        group = conn.execute(
+            """
+            SELECT *
+            FROM groups
+            WHERE id = ?
+            """,
+            (group_id,),
+        ).fetchone()
+
+        if group is None:
+            raise HTTPException(
+                404,
+                "Group not found",
+            )
+
+        if bool(group["builtin"]):
+            raise HTTPException(
+                400,
+                "Built-in groups cannot be deleted",
+            )
+
+        conn.execute(
+            """
+            DELETE FROM user_groups
+            WHERE group_id = ?
+            """,
+            (group_id,),
+        )
+
+        conn.execute(
+            """
+            DELETE FROM group_permissions
+            WHERE group_id = ?
+            """,
+            (group_id,),
+        )
+
+        conn.execute(
+            """
+            DELETE FROM groups
+            WHERE id = ?
+            """,
+            (group_id,),
+        )
+
+    return {
+        "ok": True,
+    }
+
+
+@app.get(
+    "/api/v1/groups",
+    dependencies=[
+        Depends(require_permission("groups.view"))
+    ],
+)
+def list_groups():
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                name,
+                description,
+                builtin,
+                created_at,
+                updated_at
+            FROM groups
+            ORDER BY name COLLATE NOCASE
+            """
+        ).fetchall()
+
+        groups = []
+
+        for row in rows:
+            permissions = [
+                permission["permission_key"]
+                for permission in conn.execute(
+                    """
+                    SELECT permissions.permission_key
+                    FROM permissions
+                    JOIN group_permissions
+                      ON group_permissions.permission_id =
+                         permissions.id
+                    WHERE group_permissions.group_id = ?
+                    ORDER BY permissions.permission_key
+                    """,
+                    (row["id"],),
+                ).fetchall()
+            ]
+
+            member_count = conn.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM user_groups
+                WHERE group_id = ?
+                """,
+                (row["id"],),
+            ).fetchone()["count"]
+
+            groups.append(
+                {
+                    "id": row["id"],
+                    "name": row["name"],
+                    "description": row["description"],
+                    "builtin": bool(row["builtin"]),
+                    "member_count": member_count,
+                    "permissions": permissions,
+                    "created_at": row["created_at"],
+                    "updated_at": row["updated_at"],
+                }
+            )
+
+    return {
+        "groups": groups,
+    }
+
+
+@app.get(
+    "/api/v1/permissions",
+    dependencies=[
+        Depends(require_permission("groups.view"))
+    ],
+)
+def list_permissions():
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                permission_key,
+                description
+            FROM permissions
+            ORDER BY permission_key
+            """
+        ).fetchall()
+
+    return {
+        "permissions": [
+            {
+                "id": row["id"],
+                "permission_key": row["permission_key"],
+                "description": row["description"],
+            }
+            for row in rows
+        ],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Enrollment
 # ---------------------------------------------------------------------------
 
-@app.post("/api/v1/enrollment-tokens")
+@app.post("/api/v1/enrollment-tokens", dependencies=[Depends(require_permission("hosts.manage"))])
 def create_enrollment_token():
     now = int(time.time())
     expires_at = now + 900
@@ -1086,7 +2900,7 @@ def get_agent_config(agent: dict = Depends(get_agent)):
     }
 
 
-@app.get("/api/v1/agents/{agent_id}/sources")
+@app.get("/api/v1/agents/{agent_id}/sources", dependencies=[Depends(require_permission("hosts.view"))])
 def list_agent_sources(agent_id: int):
     with db() as conn:
         agent = conn.execute(
@@ -1118,7 +2932,7 @@ def list_agent_sources(agent_id: int):
     ]
 
 
-@app.patch("/api/v1/agents/{agent_id}/sources/{source_key}")
+@app.patch("/api/v1/agents/{agent_id}/sources/{source_key}", dependencies=[Depends(require_permission("hosts.manage"))])
 def update_agent_source(
     agent_id: int,
     source_key: str,
@@ -1167,7 +2981,7 @@ def update_agent_source(
     return {"ok": True}
 
 
-@app.get("/api/v1/settings/packs")
+@app.get("/api/v1/settings/packs", dependencies=[Depends(require_permission("settings.view"))])
 def get_pack_settings():
     return {
         "allow_community_packs": get_setting_bool(
@@ -1181,7 +2995,7 @@ def get_pack_settings():
     }
 
 
-@app.put("/api/v1/settings/packs")
+@app.put("/api/v1/settings/packs", dependencies=[Depends(require_permission("settings.manage"))])
 def update_pack_settings(
     settings: PackSettings,
 ):
@@ -1221,7 +3035,7 @@ def update_pack_settings(
     }
 
 
-@app.get("/api/v1/settings/retention")
+@app.get("/api/v1/settings/retention", dependencies=[Depends(require_permission("settings.view"))])
 def get_retention_settings():
     return {
         "event_retention_days": get_setting_int(
@@ -1239,7 +3053,7 @@ def get_retention_settings():
     }
 
 
-@app.put("/api/v1/settings/retention")
+@app.put("/api/v1/settings/retention", dependencies=[Depends(require_permission("settings.manage"))])
 def update_retention_settings(
     settings: RetentionSettings,
 ):
@@ -1370,7 +3184,7 @@ def post_relevant_events(
     }
 
 
-@app.get("/api/v1/relevant")
+@app.get("/api/v1/relevant", dependencies=[Depends(require_permission("logs.view"))])
 def list_relevant_events(
     agent_id: Optional[int] = None,
     source: Optional[str] = None,
@@ -1496,7 +3310,7 @@ def post_events(
     }
 
 
-@app.get("/api/v1/events")
+@app.get("/api/v1/events", dependencies=[Depends(require_permission("logs.view"))])
 def list_events(
     agent_id: Optional[int] = None,
     source: Optional[str] = None,
@@ -1646,7 +3460,7 @@ def post_findings(
     }
 
 
-@app.get("/api/v1/findings")
+@app.get("/api/v1/findings", dependencies=[Depends(require_permission("findings.view"))])
 def list_findings(
     status: Optional[str] = None,
     agent_id: Optional[int] = None,
@@ -1680,7 +3494,7 @@ def list_findings(
     return [dict(row) for row in rows]
 
 
-@app.post("/api/v1/findings/{finding_id}/resolve")
+@app.post("/api/v1/findings/{finding_id}/resolve", dependencies=[Depends(require_permission("findings.resolve"))])
 def resolve_finding(finding_id: int):
     now = int(time.time())
 
@@ -1712,7 +3526,7 @@ def resolve_finding(finding_id: int):
 # Hosts
 # ---------------------------------------------------------------------------
 
-@app.get("/api/v1/agents")
+@app.get("/api/v1/agents", dependencies=[Depends(require_permission("hosts.view"))])
 def list_agents():
     with db() as conn:
         rows = conn.execute(
@@ -1754,7 +3568,7 @@ def list_agents():
         ).fetchall()
 
     return [dict(row) for row in rows]
-@app.delete("/api/v1/agents/{agent_id}")
+@app.delete("/api/v1/agents/{agent_id}", dependencies=[Depends(require_permission("hosts.delete"))])
 def delete_agent(agent_id: int):
     with db() as conn:
         agent = conn.execute(
@@ -2456,7 +4270,7 @@ def get_pack_dir(pack_id: str) -> Path:
     )
 
 
-@app.get("/api/v1/packs/{pack_id}/files")
+@app.get("/api/v1/packs/{pack_id}/files", dependencies=[Depends(require_permission("packs.view"))])
 def list_pack_files(pack_id: str):
     # Future permission:
     # packs.read
@@ -2488,7 +4302,7 @@ def list_pack_files(pack_id: str):
     }
 
 
-@app.get("/api/v1/packs/{pack_id}/files/{file_path:path}")
+@app.get("/api/v1/packs/{pack_id}/files/{file_path:path}", dependencies=[Depends(require_permission("packs.view"))])
 def read_pack_file(pack_id: str, file_path: str):
     # Future permission:
     # packs.read
@@ -2548,7 +4362,7 @@ def read_pack_file(pack_id: str, file_path: str):
     }
 
 
-@app.put("/api/v1/packs/{pack_id}/files")
+@app.put("/api/v1/packs/{pack_id}/files", dependencies=[Depends(require_permission("packs.manage"))])
 def save_pack_changes(
     pack_id: str,
     payload: PackFilesPayload,
@@ -2731,7 +4545,7 @@ def save_pack_changes(
             )
 
 
-@app.post("/api/v1/packs/{pack_id}/validate")
+@app.post("/api/v1/packs/{pack_id}/validate", dependencies=[Depends(require_permission("packs.manage"))])
 def validate_pack_changes(
     pack_id: str,
     payload: PackFilesPayload,
@@ -2839,7 +4653,7 @@ def validate_pack_changes(
     }
 
 
-@app.post("/api/v1/packs/install")
+@app.post("/api/v1/packs/install", dependencies=[Depends(require_permission("packs.manage"))])
 async def install_pack(file: UploadFile = File(...)):
     # Future permission:
     # packs.install
@@ -3053,7 +4867,7 @@ async def install_pack(file: UploadFile = File(...)):
             )
 
 
-@app.put("/api/v1/packs/{pack_id}/state")
+@app.put("/api/v1/packs/{pack_id}/state", dependencies=[Depends(require_permission("packs.manage"))])
 def set_pack_state(
     pack_id: str,
     payload: PackStatePayload,
@@ -3097,7 +4911,7 @@ def set_pack_state(
     }
 
 
-@app.post("/api/v1/packs/{pack_id}/revert")
+@app.post("/api/v1/packs/{pack_id}/revert", dependencies=[Depends(require_permission("packs.manage"))])
 def revert_pack_to_official(pack_id: str):
     # Future permission: packs.edit
     pack_id = str(pack_id).strip()
@@ -3181,7 +4995,7 @@ def revert_pack_to_official(pack_id: str):
     }
 
 
-@app.delete("/api/v1/packs/{pack_id}")
+@app.delete("/api/v1/packs/{pack_id}", dependencies=[Depends(require_permission("packs.manage"))])
 def delete_pack(pack_id: str):
     # Future permission: packs.delete
     pack_id = str(pack_id).strip()
@@ -3249,7 +5063,7 @@ def delete_pack(pack_id: str):
     }
 
 
-@app.get("/api/v1/packs")
+@app.get("/api/v1/packs", dependencies=[Depends(require_permission("packs.view"))])
 def list_packs():
     packs = []
 

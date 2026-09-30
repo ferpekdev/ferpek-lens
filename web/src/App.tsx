@@ -9,8 +9,26 @@ import {
   useParams,
 } from 'react-router-dom'
 import './App.css'
+import { createPortal } from 'react-dom'
 
 type Status = 'healthy' | 'warning' | 'critical' | 'unknown'
+
+type CurrentUser = {
+  id: number
+  username: string
+  display_name: string
+  email: string
+  auth_type: string
+  groups: string[]
+  permissions: string[]
+}
+
+function hasPermission(
+  user: CurrentUser,
+  permission: string,
+) {
+  return user.permissions.includes(permission)
+}
 
 function StatusDiamond({ status }: { status: Status }) {
   return <span className={`status-diamond ${status}`} />
@@ -322,10 +340,63 @@ const pageInfo: Record<string, { title: string; subtitle: string }> = {
     title: 'Settings',
     subtitle: 'Configure your FERPEK instance',
   },
+  '/settings/access': {
+    title: 'Access',
+    subtitle: 'Users, groups and permissions',
+  },
 }
 
-function Sidebar() {
+function Sidebar({
+  currentUser,
+  onLogout,
+}: {
+  currentUser: CurrentUser
+  onLogout: () => void
+}) {
+  const canViewHosts = hasPermission(
+    currentUser,
+    'hosts.view',
+  )
+
+  const canViewFindings = hasPermission(
+    currentUser,
+    'findings.view',
+  )
+
+  const canViewLogs = hasPermission(
+    currentUser,
+    'logs.view',
+  )
+
+  const canViewPacks = hasPermission(
+    currentUser,
+    'packs.view',
+  )
+
+  const canViewSettings =
+    hasPermission(currentUser, 'settings.view') ||
+    hasPermission(currentUser, 'users.view') ||
+    hasPermission(currentUser, 'groups.view')
+
   const [platformVersion, setPlatformVersion] = useState("...")
+
+  const [accountMenuOpen, setAccountMenuOpen] =
+    useState(false)
+
+  const [passwordModalOpen, setPasswordModalOpen] =
+    useState(false)
+  const [currentPassword, setCurrentPassword] =
+    useState('')
+  const [newPassword, setNewPassword] =
+    useState('')
+  const [confirmPassword, setConfirmPassword] =
+    useState('')
+  const [passwordSaving, setPasswordSaving] =
+    useState(false)
+  const [passwordError, setPasswordError] =
+    useState('')
+  const [passwordMessage, setPasswordMessage] =
+    useState('')
 
   useEffect(() => {
     fetch("/health")
@@ -338,7 +409,101 @@ function Sidebar() {
       .catch(() => {
         setPlatformVersion("unknown")
       })
+
   }, [])
+
+  async function handleLogout() {
+    try {
+      await fetch("/api/v1/auth/logout", {
+        method: "POST",
+        credentials: "include",
+      })
+    } catch (err) {
+      console.error("Logout failed:", err)
+    } finally {
+      onLogout()
+    }
+  }
+
+  function openPasswordModal() {
+    setAccountMenuOpen(false)
+    setCurrentPassword('')
+    setNewPassword('')
+    setConfirmPassword('')
+    setPasswordError('')
+    setPasswordMessage('')
+    setPasswordModalOpen(true)
+  }
+
+  async function handlePasswordChange(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault()
+
+    if (newPassword !== confirmPassword) {
+      setPasswordMessage('')
+      setPasswordError('New passwords do not match.')
+      return
+    }
+
+    if (newPassword.length < 12) {
+      setPasswordMessage('')
+      setPasswordError(
+        'New password must be at least 12 characters.',
+      )
+      return
+    }
+
+    setPasswordSaving(true)
+    setPasswordError('')
+    setPasswordMessage('')
+
+    try {
+      const response = await fetch(
+        '/api/v1/auth/change-password',
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            current_password: currentPassword,
+            new_password: newPassword,
+          }),
+        },
+      )
+
+      if (!response.ok) {
+        let message = 'Could not change password.'
+
+        try {
+          const data = await response.json()
+
+          if (typeof data?.detail === 'string') {
+            message = data.detail
+          }
+        } catch {
+          // Keep generic message.
+        }
+
+        throw new Error(message)
+      }
+
+      setCurrentPassword('')
+      setNewPassword('')
+      setConfirmPassword('')
+      setPasswordMessage('Password changed successfully.')
+    } catch (error) {
+      setPasswordError(
+        error instanceof Error
+          ? error.message
+          : 'Could not change password.',
+      )
+    } finally {
+      setPasswordSaving(false)
+    }
+  }
 
   const [hostCount, setHostCount] = useState(0)
   const [findingCount, setFindingCount] = useState(0)
@@ -346,34 +511,52 @@ function Sidebar() {
 
   async function loadSidebarCounts() {
     try {
-      const [agentsResponse, findingsResponse, packsResponse] =
-        await Promise.all([
-          fetch('/api/v1/agents'),
-          fetch('/api/v1/findings?status=open'),
-          fetch('/api/v1/packs'),
-        ])
+      if (canViewHosts) {
+        const response = await fetch('/api/v1/agents')
 
-      if (
-        !agentsResponse.ok ||
-        !findingsResponse.ok ||
-        !packsResponse.ok
-      ) {
-        throw new Error('Could not load sidebar counters')
+        if (response.ok) {
+          const agents: ApiAgent[] = await response.json()
+          setHostCount(agents.length)
+        }
+      } else {
+        setHostCount(0)
       }
 
-      const agents: ApiAgent[] = await agentsResponse.json()
-      const findings: ApiFinding[] = await findingsResponse.json()
-      const packsData = await packsResponse.json()
+      if (canViewFindings) {
+        const response = await fetch(
+          '/api/v1/findings?status=open',
+        )
 
-      setHostCount(agents.length)
-      setFindingCount(findings.length)
-      setPackCount(
-        Array.isArray(packsData?.packs)
-          ? packsData.packs.length
-          : 0,
-      )
+        if (response.ok) {
+          const findings: ApiFinding[] =
+            await response.json()
+
+          setFindingCount(findings.length)
+        }
+      } else {
+        setFindingCount(0)
+      }
+
+      if (canViewPacks) {
+        const response = await fetch('/api/v1/packs')
+
+        if (response.ok) {
+          const packsData = await response.json()
+
+          setPackCount(
+            Array.isArray(packsData?.packs)
+              ? packsData.packs.length
+              : 0,
+          )
+        }
+      } else {
+        setPackCount(0)
+      }
     } catch (err) {
-      console.error('Could not load sidebar counters:', err)
+      console.error(
+        'Could not load sidebar counters:',
+        err,
+      )
     }
   }
 
@@ -408,99 +591,332 @@ function Sidebar() {
           Overview
         </NavLink>
 
-        <NavLink
-          to="/systems"
-          className={({ isActive }) =>
-            `nav-item ${isActive ? 'active' : ''}`
-          }
-        >
-          <span className="nav-icon">▣</span>
-          Hosts
+        {canViewHosts && (
+          <NavLink
+            to="/systems"
+            className={({ isActive }) =>
+              `nav-item ${isActive ? 'active' : ''}`
+            }
+          >
+            <span className="nav-icon">▣</span>
+            Hosts
 
-          {hostCount > 0 && (
-            <span className="nav-count host-nav-count">
-              {hostCount}
-            </span>
-          )}
-        </NavLink>
+            {hostCount > 0 && (
+              <span className="nav-count host-nav-count">
+                {hostCount}
+              </span>
+            )}
+          </NavLink>
+        )}
 
-        <NavLink
-          to="/findings"
-          className={({ isActive }) =>
-            `nav-item ${isActive ? 'active' : ''}`
-          }
-        >
-          <span className="nav-icon">◇</span>
-          Findings
+        {canViewFindings && (
+          <NavLink
+            to="/findings"
+            className={({ isActive }) =>
+              `nav-item ${isActive ? 'active' : ''}`
+            }
+          >
+            <span className="nav-icon">◇</span>
+            Findings
 
-          {findingCount > 0 && (
-            <span className="nav-count danger">
-              {findingCount}
-            </span>
-          )}
-        </NavLink>
+            {findingCount > 0 && (
+              <span className="nav-count danger">
+                {findingCount}
+              </span>
+            )}
+          </NavLink>
+        )}
 
-        <NavLink
-          to="/activity"
-          className={({ isActive }) =>
-            `nav-item ${isActive ? 'active' : ''}`
-          }
-        >
-          <span className="nav-icon">≡</span>
-          Activity
-        </NavLink>
+        {canViewLogs && (
+          <NavLink
+            to="/activity"
+            className={({ isActive }) =>
+              `nav-item ${isActive ? 'active' : ''}`
+            }
+          >
+            <span className="nav-icon">≡</span>
+            Activity
+          </NavLink>
+        )}
 
-        <NavLink
-          to="/packs"
-          className={({ isActive }) =>
-            `nav-item ${isActive ? 'active' : ''}`
-          }
-        >
-          <span className="nav-icon">◇</span>
-          Packs
+        {canViewPacks && (
+          <NavLink
+            to="/packs"
+            className={({ isActive }) =>
+              `nav-item ${isActive ? 'active' : ''}`
+            }
+          >
+            <span className="nav-icon">◇</span>
+            Packs
 
-          {packCount > 0 && (
-            <span className="nav-count host-nav-count">
-              {packCount}
-            </span>
-          )}
-        </NavLink>
+            {packCount > 0 && (
+              <span className="nav-count host-nav-count">
+                {packCount}
+              </span>
+            )}
+          </NavLink>
+        )}
       </nav>
 
       <div className="sidebar-bottom">
-        <NavLink
-          to="/settings"
-          className={({ isActive }) =>
-            `nav-item ${isActive ? 'active' : ''}`
-          }
-        >
-          <span className="nav-icon">⚙</span>
-          Settings
-        </NavLink>
+        <div className="sidebar-account">
+          <button
+            type="button"
+            className={
+              accountMenuOpen
+                ? 'sidebar-user sidebar-user-button open'
+                : 'sidebar-user sidebar-user-button'
+            }
+            onClick={() =>
+              setAccountMenuOpen((current) => !current)
+            }
+            aria-expanded={accountMenuOpen}
+          >
+            <div className="sidebar-user-avatar">
+              {(currentUser.display_name ||
+                currentUser.username)
+                .charAt(0)
+                .toUpperCase()}
+            </div>
+
+            <div className="sidebar-user-info">
+              <strong>
+                {currentUser.display_name ||
+                  currentUser.username}
+              </strong>
+
+              <span>
+                {currentUser.groups?.[0] ||
+                  currentUser.username}
+              </span>
+            </div>
+
+            <span className="sidebar-account-chevron">
+              {accountMenuOpen ? '⌃' : '⌄'}
+            </span>
+          </button>
+
+          {accountMenuOpen && (
+            <div className="sidebar-account-menu">
+              {currentUser.auth_type === 'local' && (
+                <button
+                  type="button"
+                  onClick={openPasswordModal}
+                >
+                  <span>⌘</span>
+                  Change password
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => void handleLogout()}
+              >
+                <span>↪</span>
+                Sign out
+              </button>
+            </div>
+          )}
+        </div>
+
+        {canViewSettings && (
+          <NavLink
+            to="/settings"
+            className={({ isActive }) =>
+              `nav-item ${isActive ? 'active' : ''}`
+            }
+          >
+            <span className="nav-icon">⚙</span>
+            Settings
+          </NavLink>
+        )}
 
         <div className="version">FERPEK v{platformVersion}</div>
       </div>
+
+      {passwordModalOpen &&
+        createPortal(
+          <div
+            className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setPasswordModalOpen(false)
+            }
+          }}
+        >
+          <div className="modal account-password-modal">
+            <div className="modal-header">
+              <div>
+                <h2>Change password</h2>
+                <p>
+                  Change the password for @{currentUser.username}.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() =>
+                  setPasswordModalOpen(false)
+                }
+                disabled={passwordSaving}
+              >
+                ×
+              </button>
+            </div>
+
+            <form
+              className="access-user-form"
+              onSubmit={handlePasswordChange}
+            >
+              <label>
+                <span>Current password</span>
+
+                <input
+                  type="password"
+                  value={currentPassword}
+                  required
+                  autoComplete="current-password"
+                  onChange={(event) =>
+                    setCurrentPassword(
+                      event.target.value,
+                    )
+                  }
+                />
+              </label>
+
+              <label>
+                <span>New password</span>
+
+                <input
+                  type="password"
+                  value={newPassword}
+                  minLength={12}
+                  maxLength={256}
+                  required
+                  autoComplete="new-password"
+                  onChange={(event) =>
+                    setNewPassword(
+                      event.target.value,
+                    )
+                  }
+                />
+              </label>
+
+              <label>
+                <span>Confirm new password</span>
+
+                <input
+                  type="password"
+                  value={confirmPassword}
+                  minLength={12}
+                  maxLength={256}
+                  required
+                  autoComplete="new-password"
+                  onChange={(event) =>
+                    setConfirmPassword(
+                      event.target.value,
+                    )
+                  }
+                />
+              </label>
+
+              {passwordError && (
+                <div className="modal-error">
+                  {passwordError}
+                </div>
+              )}
+
+              {passwordMessage && (
+                <div className="account-password-success">
+                  {passwordMessage}
+                </div>
+              )}
+
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() =>
+                    setPasswordModalOpen(false)
+                  }
+                  disabled={passwordSaving}
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  className="secondary-button"
+                  disabled={passwordSaving}
+                >
+                  {passwordSaving
+                    ? 'Changing...'
+                    : 'Change password'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>,
+          document.body,
+        )}
     </aside>
   )
 }
 
-function Overview() {
+function Overview({
+  currentUser,
+}: {
+  currentUser: CurrentUser
+}) {
+  const canViewHosts = hasPermission(
+    currentUser,
+    'hosts.view',
+  )
+
+  const canViewFindings = hasPermission(
+    currentUser,
+    'findings.view',
+  )
+
   const [agents, setAgents] = useState<ApiAgent[]>([])
   const [apiFindings, setApiFindings] = useState<ApiFinding[]>([])
 
   async function loadOverview() {
     try {
-      const [agentsResponse, findingsResponse] = await Promise.all([
-        fetch('/api/v1/agents'),
-        fetch('/api/v1/findings?status=open'),
-      ])
+      if (canViewHosts) {
+        const agentsResponse = await fetch(
+          '/api/v1/agents',
+        )
 
-      if (!agentsResponse.ok || !findingsResponse.ok) {
-        throw new Error('Could not load overview data')
+        if (!agentsResponse.ok) {
+          throw new Error(
+            'Could not load host overview data',
+          )
+        }
+
+        setAgents(await agentsResponse.json())
+      } else {
+        setAgents([])
       }
 
-      setAgents(await agentsResponse.json())
-      setApiFindings(await findingsResponse.json())
+      if (canViewFindings) {
+        const findingsResponse = await fetch(
+          '/api/v1/findings?status=open',
+        )
+
+        if (!findingsResponse.ok) {
+          throw new Error(
+            'Could not load findings overview data',
+          )
+        }
+
+        setApiFindings(
+          await findingsResponse.json(),
+        )
+      } else {
+        setApiFindings([])
+      }
     } catch (err) {
       console.error('Could not load overview:', err)
     }
@@ -510,8 +926,9 @@ function Overview() {
     loadOverview()
 
     const timer = window.setInterval(loadOverview, 5000)
+
     return () => window.clearInterval(timer)
-  }, [])
+  }, [canViewHosts, canViewFindings])
 
   const criticalCount = apiFindings.filter(
     (finding) => findingStatus(finding.severity) === 'critical',
@@ -539,6 +956,16 @@ function Overview() {
 
   return (
     <>
+      {!canViewHosts && !canViewFindings ? (
+        <section>
+          <div className="panel">
+            <div className="empty-state">
+              Your account has limited access to this
+              FERPEK instance.
+            </div>
+          </div>
+        </section>
+      ) : (
       <section className="status-section">
         <div className="section-heading">
           <div>
@@ -550,49 +977,81 @@ function Overview() {
         </div>
 
         <div className="stats-grid">
-          <div className="stat-card">
-            <div className="stat-label">Hosts</div>
-            <div className="stat-value">{agents.length}</div>
-            <div className="stat-detail">
-              <StatusDiamond
-                status={onlineHosts > 0 ? 'healthy' : 'unknown'}
-              />
-              {onlineHosts} online
+          {canViewHosts && (
+            <div className="stat-card">
+              <div className="stat-label">Hosts</div>
+              <div className="stat-value">{agents.length}</div>
+              <div className="stat-detail">
+                <StatusDiamond
+                  status={
+                    onlineHosts > 0
+                      ? 'healthy'
+                      : 'unknown'
+                  }
+                />
+                {onlineHosts} online
+              </div>
             </div>
-          </div>
+          )}
 
-          <div className="stat-card critical-card">
-            <div className="stat-label">Critical</div>
-            <div className="stat-value">{criticalCount}</div>
-            <div className="stat-detail critical-text">
-              <StatusDiamond
-                status={criticalCount > 0 ? 'critical' : 'healthy'}
-              />
-              {criticalCount > 0 ? 'Needs attention' : 'No critical findings'}
+          {canViewFindings && (
+            <div className="stat-card critical-card">
+              <div className="stat-label">Critical</div>
+              <div className="stat-value">
+                {criticalCount}
+              </div>
+              <div className="stat-detail critical-text">
+                <StatusDiamond
+                  status={
+                    criticalCount > 0
+                      ? 'critical'
+                      : 'healthy'
+                  }
+                />
+                {criticalCount > 0
+                  ? 'Needs attention'
+                  : 'No critical findings'}
+              </div>
             </div>
-          </div>
+          )}
 
-          <div className="stat-card">
-            <div className="stat-label">Warnings</div>
-            <div className="stat-value">{warningCount}</div>
-            <div className="stat-detail warning-text">
-              <StatusDiamond
-                status={warningCount > 0 ? 'warning' : 'healthy'}
-              />
-              {warningCount > 0 ? 'Open findings' : 'No warnings'}
+          {canViewFindings && (
+            <div className="stat-card">
+              <div className="stat-label">Warnings</div>
+              <div className="stat-value">
+                {warningCount}
+              </div>
+              <div className="stat-detail warning-text">
+                <StatusDiamond
+                  status={
+                    warningCount > 0
+                      ? 'warning'
+                      : 'healthy'
+                  }
+                />
+                {warningCount > 0
+                  ? 'Open findings'
+                  : 'No warnings'}
+              </div>
             </div>
-          </div>
+          )}
 
-          <div className="stat-card">
-            <div className="stat-label">Healthy</div>
-            <div className="stat-value">{healthyHosts}</div>
-            <div className="stat-detail muted">
-              Hosts without open findings
+          {canViewHosts && (
+            <div className="stat-card">
+              <div className="stat-label">Healthy</div>
+              <div className="stat-value">
+                {healthyHosts}
+              </div>
+              <div className="stat-detail muted">
+                Hosts without open findings
+              </div>
             </div>
-          </div>
+          )}
         </div>
       </section>
+      )}
 
+      {canViewFindings && (
       <section className="findings-section">
         <div className="section-heading">
           <div>
@@ -656,6 +1115,7 @@ function Overview() {
           )}
         </div>
       </section>
+      )}
 
       <section className="bottom-grid">
         <div className="panel">
@@ -756,7 +1216,11 @@ function Overview() {
   )
 }
 
-function Systems() {
+function Systems({
+  currentUser,
+}: {
+  currentUser: CurrentUser
+}) {
   const navigate = useNavigate()
 
   type Agent = {
@@ -1034,7 +1498,10 @@ function Systems() {
     field: 'enabled' | 'send_events',
     value: boolean,
   ) {
-    if (!sourcesHost) {
+    if (
+      !sourcesHost ||
+      !hasPermission(currentUser, 'hosts.manage')
+    ) {
       return
     }
 
@@ -1138,9 +1605,17 @@ function Systems() {
           <p>Physical machines and virtual machines monitored by FERPEK</p>
         </div>
 
-        <button className="primary-button" onClick={createEnrollment}>
-          + Add host
-        </button>
+        {hasPermission(
+          currentUser,
+          'hosts.manage',
+        ) && (
+          <button
+            className="primary-button"
+            onClick={createEnrollment}
+          >
+            + Add host
+          </button>
+        )}
       </div>
 
       <div className="panel">
@@ -1211,27 +1686,32 @@ function Systems() {
                     👁
                   </button>
 
-                  <button
-                    className="host-icon-button danger tooltip"
-                    data-tooltip="Delete host"
-                    aria-label={`Delete ${agent.hostname}`}
-                    onClick={() => {
-                      setDeleteError('')
-                      setHostToDelete(agent)
-                    }}
-                  >
-                    <svg
-                      className="delete-icon"
-                      viewBox="0 0 24 24"
-                      aria-hidden="true"
+                  {hasPermission(
+                    currentUser,
+                    'hosts.delete',
+                  ) && (
+                    <button
+                      className="host-icon-button danger tooltip"
+                      data-tooltip="Delete host"
+                      aria-label={`Delete ${agent.hostname}`}
+                      onClick={() => {
+                        setDeleteError('')
+                        setHostToDelete(agent)
+                      }}
                     >
-                      <path d="M4 7h16" />
-                      <path d="M9 7V4h6v3" />
-                      <path d="M6.5 7l1 13h9l1-13" />
-                      <path d="M10 11v5" />
-                      <path d="M14 11v5" />
-                    </svg>
-                  </button>
+                      <svg
+                        className="delete-icon"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                      >
+                        <path d="M4 7h16" />
+                        <path d="M9 7V4h6v3" />
+                        <path d="M6.5 7l1 13h9l1-13" />
+                        <path d="M10 11v5" />
+                        <path d="M14 11v5" />
+                      </svg>
+                    </button>
+                  )}
                 </div>
               </div>
             </div>
@@ -1322,6 +1802,10 @@ function Systems() {
                         type="checkbox"
                         checked={source.enabled}
                         disabled={
+                          !hasPermission(
+                            currentUser,
+                            'hosts.manage',
+                          ) ||
                           updatingSource === source.source_key
                         }
                         onChange={(event) =>
@@ -1343,6 +1827,10 @@ function Systems() {
                         type="checkbox"
                         checked={source.send_events}
                         disabled={
+                          !hasPermission(
+                            currentUser,
+                            'hosts.manage',
+                          ) ||
                           updatingSource === source.source_key
                         }
                         onChange={(event) =>
@@ -1615,13 +2103,18 @@ function Systems() {
           </div>
         </div>
       )}
+
     </section>
   )
 }
 
 
 
-function HostDetail() {
+function HostDetail({
+  currentUser,
+}: {
+  currentUser: CurrentUser
+}) {
   type HostTab = 'overview' | 'logs' | 'findings' | 'sources'
   type LogMode = 'relevant' | 'raw'
 
@@ -1843,6 +2336,10 @@ function HostDetail() {
     field: 'enabled' | 'send_events',
     value: boolean,
   ) {
+    if (!hasPermission(currentUser, 'hosts.manage')) {
+      return
+    }
+
     setSourceDrafts((current) =>
       current.map((source) => {
         if (source.source_key !== sourceKey) {
@@ -1882,6 +2379,9 @@ function HostDetail() {
   }
 
   async function saveSourceChanges() {
+    if (!hasPermission(currentUser, 'hosts.manage')) {
+      return
+    }
     const changed = sourceDrafts.filter((draft) => {
       const original = sources.find(
         (source) => source.source_key === draft.source_key,
@@ -2511,37 +3011,42 @@ function HostDetail() {
             )}
           </div>
 
-          <div className="host-source-savebar">
-            <div>
-              {sourcesSaveError && (
-                <span className="source-save-error">
-                  {sourcesSaveError}
-                </span>
-              )}
-
-              {sourcesSaveMessage && (
-                <span className="source-save-success">
-                  {sourcesSaveMessage}
-                </span>
-              )}
-
-              {sourcesDirty &&
-                !sourcesSaveError &&
-                !sourcesSaveMessage && (
-                  <span className="source-save-pending">
-                    Unsaved changes
+          {hasPermission(
+            currentUser,
+            'hosts.manage',
+          ) && (
+            <div className="host-source-savebar">
+              <div>
+                {sourcesSaveError && (
+                  <span className="source-save-error">
+                    {sourcesSaveError}
                   </span>
                 )}
-            </div>
 
-            <button
-              className="primary-button"
-              disabled={!sourcesDirty || savingSources}
-              onClick={saveSourceChanges}
-            >
-              {savingSources ? 'Saving...' : 'Save changes'}
-            </button>
-          </div>
+                {sourcesSaveMessage && (
+                  <span className="source-save-success">
+                    {sourcesSaveMessage}
+                  </span>
+                )}
+
+                {sourcesDirty &&
+                  !sourcesSaveError &&
+                  !sourcesSaveMessage && (
+                    <span className="source-save-pending">
+                      Unsaved changes
+                    </span>
+                  )}
+              </div>
+
+              <button
+                className="primary-button"
+                disabled={!sourcesDirty || savingSources}
+                onClick={saveSourceChanges}
+              >
+                {savingSources ? 'Saving...' : 'Save changes'}
+              </button>
+            </div>
+          )}
         </div>
       )}
 
@@ -2550,7 +3055,11 @@ function HostDetail() {
 }
 
 
-function Findings() {
+function Findings({
+  currentUser,
+}: {
+  currentUser: CurrentUser
+}) {
   const [filter, setFilter] =
     useState<'all' | Status>('all')
 
@@ -2897,7 +3406,11 @@ function Findings() {
 
                         <div className="finding-host-side">
                           {finding.status ===
-                            'open' && (
+                            'open' &&
+                            hasPermission(
+                              currentUser,
+                              'findings.resolve',
+                            ) && (
                             <button
                               className="resolve-button"
                               disabled={
@@ -3001,7 +3514,11 @@ function Activity() {
   )
 }
 
-function Packs() {
+function Packs({
+  currentUser,
+}: {
+  currentUser: CurrentUser
+}) {
   const [packs, setPacks] = useState<ApiPack[]>([])
   const [loading, setLoading] = useState(true)
   const [packSearch, setPackSearch] = useState("")
@@ -3068,7 +3585,10 @@ function Packs() {
     pack: ApiPack,
     enabled: boolean,
   ) {
-    if (packStateChanging) {
+    if (
+      !hasPermission(currentUser, 'packs.manage') ||
+      packStateChanging
+    ) {
       return
     }
 
@@ -3132,7 +3652,11 @@ function Packs() {
     file: File | null,
     input: HTMLInputElement,
   ) {
-    if (!file || packInstalling) {
+    if (
+      !hasPermission(currentUser, 'packs.manage') ||
+      !file ||
+      packInstalling
+    ) {
       return
     }
 
@@ -3208,7 +3732,11 @@ function Packs() {
   }
 
   async function revertPackToOfficial() {
-    if (!revertPack || packReverting) {
+    if (
+      !hasPermission(currentUser, 'packs.manage') ||
+      !revertPack ||
+      packReverting
+    ) {
       return
     }
 
@@ -3276,7 +3804,11 @@ function Packs() {
   }
 
   async function deleteInstalledPack() {
-    if (!deletePack || packDeleting) {
+    if (
+      !hasPermission(currentUser, 'packs.manage') ||
+      !deletePack ||
+      packDeleting
+    ) {
       return
     }
 
@@ -3413,6 +3945,10 @@ function Packs() {
   }
 
   async function openPackEditor(pack: ApiPack) {
+    if (!hasPermission(currentUser, 'packs.manage')) {
+      return
+    }
+
     setEditPackWarning(null)
     setEditPack(pack)
     setEditPackFiles([])
@@ -3471,7 +4007,10 @@ function Packs() {
   }
 
   async function validateEditedPack() {
-    if (!editPack) {
+    if (
+      !hasPermission(currentUser, 'packs.manage') ||
+      !editPack
+    ) {
       return
     }
 
@@ -3521,7 +4060,11 @@ function Packs() {
   }
 
   async function saveEditedPack() {
-    if (!editPack || !editPackValidated) {
+    if (
+      !hasPermission(currentUser, 'packs.manage') ||
+      !editPack ||
+      !editPackValidated
+    ) {
       return
     }
 
@@ -3626,27 +4169,32 @@ function Packs() {
           </p>
         </div>
 
-        <label
-          className={
-            packInstalling
-              ? "secondary-button pack-install-button disabled"
-              : "secondary-button pack-install-button"
-          }
-        >
-          {packInstalling ? "Installing..." : "Install pack"}
-
-          <input
-            type="file"
-            accept=".pack"
-            disabled={packInstalling}
-            onChange={(event) =>
-              void installPackFile(
-                event.currentTarget.files?.[0] || null,
-                event.currentTarget,
-              )
+        {hasPermission(
+          currentUser,
+          'packs.manage',
+        ) && (
+          <label
+            className={
+              packInstalling
+                ? "secondary-button pack-install-button disabled"
+                : "secondary-button pack-install-button"
             }
-          />
-        </label>
+          >
+            {packInstalling ? "Installing..." : "Install pack"}
+
+            <input
+              type="file"
+              accept=".pack"
+              disabled={packInstalling}
+              onChange={(event) =>
+                void installPackFile(
+                  event.currentTarget.files?.[0] || null,
+                  event.currentTarget,
+                )
+              }
+            />
+          </label>
+        )}
       </div>
 
       <div className="pack-tabs">
@@ -3685,7 +4233,10 @@ function Packs() {
         </div>
       )}
 
-      {packInstallError && (
+      {hasPermission(
+        currentUser,
+        'packs.manage',
+      ) && packInstallError && (
         <div className="pack-page-error">
           {packInstallError}
         </div>
@@ -3758,37 +4309,42 @@ function Packs() {
                 </div>
 
                 <div className="pack-row-actions">
-                  <button
-                    className={`host-icon-button pack-state-action tooltip ${
-                      pack.enabled
-                        ? "disable"
-                        : "enable"
-                    }`}
-                    type="button"
-                    disabled={packStateChanging === pack.id}
-                    data-tooltip={
-                      pack.enabled
-                        ? "Disable pack"
-                        : "Enable pack"
-                    }
-                    aria-label={
-                      pack.enabled
-                        ? `Disable ${pack.name}`
-                        : `Enable ${pack.name}`
-                    }
-                    onClick={() =>
-                      void setPackEnabled(
-                        pack,
-                        !pack.enabled,
-                      )
-                    }
-                  >
-                    {packStateChanging === pack.id
-                      ? "…"
-                      : pack.enabled
-                        ? "×"
-                        : "✓"}
-                  </button>
+                  {hasPermission(
+                    currentUser,
+                    'packs.manage',
+                  ) && (
+                    <button
+                      className={`host-icon-button pack-state-action tooltip ${
+                        pack.enabled
+                          ? "disable"
+                          : "enable"
+                      }`}
+                      type="button"
+                      disabled={packStateChanging === pack.id}
+                      data-tooltip={
+                        pack.enabled
+                          ? "Disable pack"
+                          : "Enable pack"
+                      }
+                      aria-label={
+                        pack.enabled
+                          ? `Disable ${pack.name}`
+                          : `Enable ${pack.name}`
+                      }
+                      onClick={() =>
+                        void setPackEnabled(
+                          pack,
+                          !pack.enabled,
+                        )
+                      }
+                    >
+                      {packStateChanging === pack.id
+                        ? "…"
+                        : pack.enabled
+                          ? "×"
+                          : "✓"}
+                    </button>
+                  )}
 
                   <button
                     className="host-icon-button tooltip"
@@ -3799,16 +4355,25 @@ function Packs() {
                     👁
                   </button>
 
-                  <button
-                    className="host-icon-button tooltip"
-                    data-tooltip="Edit pack"
-                    aria-label={`Edit ${pack.name}`}
-                    onClick={() => setEditPackWarning(pack)}
-                  >
-                    ✎
-                  </button>
+                  {hasPermission(
+                    currentUser,
+                    'packs.manage',
+                  ) && (
+                    <button
+                      className="host-icon-button tooltip"
+                      data-tooltip="Edit pack"
+                      aria-label={`Edit ${pack.name}`}
+                      onClick={() => setEditPackWarning(pack)}
+                    >
+                      ✎
+                    </button>
+                  )}
 
-                  {pack.overridden && (
+                  {pack.overridden &&
+                    hasPermission(
+                      currentUser,
+                      'packs.manage',
+                    ) && (
                     <button
                       className="host-icon-button tooltip"
                       data-tooltip="Revert to official"
@@ -3822,7 +4387,11 @@ function Packs() {
                     </button>
                   )}
 
-                  {pack.capabilities?.delete && (
+                  {pack.capabilities?.delete &&
+                    hasPermission(
+                      currentUser,
+                      'packs.manage',
+                    ) && (
                     <button
                       className="host-icon-button tooltip"
                       data-tooltip="Delete pack"
@@ -4252,7 +4821,1561 @@ function Packs() {
 }
 
 
-function Settings() {
+type ApiUserAccount = {
+  id: number
+  username: string
+  display_name: string | null
+  email: string | null
+  auth_type: string
+  enabled: boolean
+  created_at: number
+  updated_at: number
+  last_login_at: number | null
+  groups: string[]
+}
+
+type ApiAccessGroup = {
+  id: number
+  name: string
+  description: string | null
+  builtin: boolean
+  member_count: number
+  permissions: string[]
+  created_at: number
+  updated_at: number
+}
+
+type ApiAccessPermission = {
+  id: number
+  permission_key: string
+  description: string | null
+}
+
+
+function AccessPage({
+  currentUser,
+}: {
+  currentUser: CurrentUser
+}) {
+  const canViewUsers = hasPermission(
+    currentUser,
+    'users.view',
+  )
+
+  const canManageUsers = hasPermission(
+    currentUser,
+    'users.manage',
+  )
+
+  const canViewGroups = hasPermission(
+    currentUser,
+    'groups.view',
+  )
+
+  const canManageGroups = hasPermission(
+    currentUser,
+    'groups.manage',
+  )
+
+  const [activeTab, setActiveTab] =
+    useState<'users' | 'groups'>(
+      canViewUsers ? 'users' : 'groups',
+    )
+
+  const [users, setUsers] = useState<ApiUserAccount[]>([])
+  const [groups, setGroups] = useState<ApiAccessGroup[]>([])
+  const [permissions, setPermissions] =
+    useState<ApiAccessPermission[]>([])
+
+  const [groupModalOpen, setGroupModalOpen] =
+    useState(false)
+  const [editingGroup, setEditingGroup] =
+    useState<ApiAccessGroup | null>(null)
+
+  const [groupName, setGroupName] = useState('')
+  const [groupDescription, setGroupDescription] =
+    useState('')
+  const [groupPermissionKeys, setGroupPermissionKeys] =
+    useState<string[]>([])
+
+  const [permissionSearch, setPermissionSearch] =
+    useState('')
+
+  const [groupSaving, setGroupSaving] = useState(false)
+  const [groupSaveError, setGroupSaveError] =
+    useState('')
+
+  const [groupDeleting, setGroupDeleting] = useState(false)
+  const [deleteGroupConfirmOpen, setDeleteGroupConfirmOpen] =
+    useState(false)
+
+  const [usersLoading, setUsersLoading] = useState(canViewUsers)
+  const [groupsLoading, setGroupsLoading] = useState(canViewGroups)
+
+  const [usersError, setUsersError] = useState('')
+  const [groupsError, setGroupsError] = useState('')
+
+  const [userModalOpen, setUserModalOpen] = useState(false)
+  const [editingUser, setEditingUser] =
+    useState<ApiUserAccount | null>(null)
+
+  const [userUsername, setUserUsername] = useState('')
+  const [userDisplayName, setUserDisplayName] = useState('')
+  const [userEmail, setUserEmail] = useState('')
+  const [userPassword, setUserPassword] = useState('')
+  const [userEnabled, setUserEnabled] = useState(true)
+  const [userGroupIds, setUserGroupIds] =
+    useState<number[]>([])
+
+  const [groupPickerOpen, setGroupPickerOpen] =
+    useState(false)
+
+  const [userSaving, setUserSaving] = useState(false)
+  const [userSaveError, setUserSaveError] = useState('')
+
+  const [userDeleting, setUserDeleting] = useState(false)
+  const [deleteUserConfirmOpen, setDeleteUserConfirmOpen] =
+    useState(false)
+
+  async function loadUsers() {
+    if (!canViewUsers) {
+      return
+    }
+
+    setUsersError('')
+
+    try {
+      const response = await fetch('/api/v1/users')
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+
+      const data = await response.json()
+
+      setUsers(
+        Array.isArray(data?.users)
+          ? data.users
+          : [],
+      )
+    } catch {
+      setUsersError('Could not load users.')
+    } finally {
+      setUsersLoading(false)
+    }
+  }
+
+  async function loadGroups() {
+    if (!canViewGroups) {
+      return
+    }
+
+    setGroupsError('')
+
+    try {
+      const response = await fetch('/api/v1/groups')
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+
+      const data = await response.json()
+
+      setGroups(
+        Array.isArray(data?.groups)
+          ? data.groups
+          : [],
+      )
+    } catch {
+      setGroupsError('Could not load groups.')
+    } finally {
+      setGroupsLoading(false)
+    }
+  }
+
+  async function loadPermissions() {
+    if (!canViewGroups) {
+      return
+    }
+
+    try {
+      const response = await fetch('/api/v1/permissions')
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`)
+      }
+
+      const data = await response.json()
+
+      setPermissions(
+        Array.isArray(data?.permissions)
+          ? data.permissions
+          : [],
+      )
+    } catch {
+      setPermissions([])
+    }
+  }
+
+  useEffect(() => {
+    void loadUsers()
+    void loadGroups()
+    void loadPermissions()
+  }, [])
+
+  function openNewUser() {
+    if (!canManageUsers) {
+      return
+    }
+
+    setEditingUser(null)
+    setUserUsername('')
+    setUserDisplayName('')
+    setUserEmail('')
+    setUserPassword('')
+    setUserEnabled(true)
+    setUserGroupIds([])
+    setGroupPickerOpen(false)
+    setUserSaveError('')
+    setUserModalOpen(true)
+  }
+
+  function openEditUser(user: ApiUserAccount) {
+    if (!canManageUsers) {
+      return
+    }
+
+    setEditingUser(user)
+    setUserUsername(user.username)
+    setUserDisplayName(user.display_name || '')
+    setUserEmail(user.email || '')
+    setUserPassword('')
+    setUserEnabled(user.enabled)
+
+    const selectedGroupIds = groups
+      .filter((group) =>
+        user.groups.includes(group.name),
+      )
+      .map((group) => group.id)
+
+    setUserGroupIds(selectedGroupIds)
+    setGroupPickerOpen(false)
+    setUserSaveError('')
+    setUserModalOpen(true)
+  }
+
+  function toggleUserGroup(groupId: number) {
+    const administratorsGroup = groups.find(
+      (group) => group.name === 'Administrators',
+    )
+
+    const administratorsId = administratorsGroup?.id
+
+    setUserGroupIds((current) => {
+      const isSelected = current.includes(groupId)
+
+      if (groupId === administratorsId) {
+        return isSelected
+          ? []
+          : administratorsId !== undefined
+            ? [administratorsId]
+            : current
+      }
+
+      if (
+        administratorsId !== undefined &&
+        current.includes(administratorsId)
+      ) {
+        return current
+      }
+
+      return isSelected
+        ? current.filter((id) => id !== groupId)
+        : [...current, groupId]
+    })
+  }
+
+  async function deleteUser() {
+    if (
+      !canManageUsers ||
+      editingUser === null ||
+      editingUser.id === currentUser.id
+    ) {
+      return
+    }
+
+    setUserDeleting(true)
+    setUserSaveError('')
+
+    try {
+      const response = await fetch(
+        `/api/v1/users/${editingUser.id}`,
+        {
+          method: 'DELETE',
+        },
+      )
+
+      if (!response.ok) {
+        let message = 'Could not delete user.'
+
+        try {
+          const data = await response.json()
+
+          if (typeof data?.detail === 'string') {
+            message = data.detail
+          }
+        } catch {
+          // Keep generic message.
+        }
+
+        throw new Error(message)
+      }
+
+      setDeleteUserConfirmOpen(false)
+      setUserModalOpen(false)
+      setEditingUser(null)
+
+      await loadUsers()
+      await loadGroups()
+    } catch (error) {
+      setDeleteUserConfirmOpen(false)
+
+      setUserSaveError(
+        error instanceof Error
+          ? error.message
+          : 'Could not delete user.',
+      )
+    } finally {
+      setUserDeleting(false)
+    }
+  }
+
+
+  async function saveUser(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault()
+
+    if (!canManageUsers) {
+      return
+    }
+
+    setUserSaving(true)
+    setUserSaveError('')
+
+    try {
+      const isEditing = editingUser !== null
+
+      const payload: Record<string, unknown> = {
+        username: userUsername,
+        display_name: userDisplayName,
+        email: userEmail,
+        group_ids: userGroupIds,
+      }
+
+      if (isEditing) {
+        payload.enabled = userEnabled
+
+        if (userPassword.length > 0) {
+          payload.password = userPassword
+        }
+      } else {
+        payload.password = userPassword
+      }
+
+      const response = await fetch(
+        isEditing
+          ? `/api/v1/users/${editingUser.id}`
+          : '/api/v1/users',
+        {
+          method: isEditing ? 'PATCH' : 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        },
+      )
+
+      if (!response.ok) {
+        let message = 'Could not save user.'
+
+        try {
+          const data = await response.json()
+
+          if (typeof data?.detail === 'string') {
+            message = data.detail
+          }
+        } catch {
+          // Keep generic message.
+        }
+
+        throw new Error(message)
+      }
+
+      setUserModalOpen(false)
+      setEditingUser(null)
+      await loadUsers()
+      await loadGroups()
+    } catch (error) {
+      setUserSaveError(
+        error instanceof Error
+          ? error.message
+          : 'Could not save user.',
+      )
+    } finally {
+      setUserSaving(false)
+    }
+  }
+
+  function openNewGroup() {
+    if (!canManageGroups) {
+      return
+    }
+
+    setEditingGroup(null)
+    setGroupName('')
+    setGroupDescription('')
+    setGroupPermissionKeys([])
+    setPermissionSearch('')
+    setGroupSaveError('')
+    setGroupModalOpen(true)
+  }
+
+  function openEditGroup(group: ApiAccessGroup) {
+    if (!canManageGroups || group.builtin) {
+      return
+    }
+
+    setEditingGroup(group)
+    setGroupName(group.name)
+    setGroupDescription(group.description || '')
+    setGroupPermissionKeys([...group.permissions])
+    setPermissionSearch('')
+    setGroupSaveError('')
+    setGroupModalOpen(true)
+  }
+
+  function permissionLabel(permissionKey: string) {
+    const labels: Record<string, string> = {
+      'users.view': 'View users',
+      'users.manage': 'Manage users',
+
+      'groups.view': 'View groups',
+      'groups.manage': 'Manage groups',
+
+      'hosts.view': 'View hosts',
+      'hosts.manage': 'Manage hosts',
+      'hosts.delete': 'Delete hosts',
+
+      'findings.view': 'View findings',
+      'findings.resolve': 'Resolve findings',
+
+      'logs.view': 'View logs',
+
+      'packs.view': 'View packs',
+      'packs.manage': 'Manage packs',
+
+      'settings.view': 'View settings',
+      'settings.manage': 'Manage settings',
+      'settings.auth_manage': 'Manage authentication',
+    }
+
+    return labels[permissionKey] ?? permissionKey
+  }
+
+  function toggleGroupPermission(permissionKey: string) {
+    setGroupPermissionKeys((current) =>
+      current.includes(permissionKey)
+        ? current.filter(
+            (key) => key !== permissionKey,
+          )
+        : [...current, permissionKey],
+    )
+  }
+
+  async function deleteGroup() {
+    if (
+      !canManageGroups ||
+      editingGroup === null ||
+      editingGroup.builtin
+    ) {
+      return
+    }
+
+    setGroupDeleting(true)
+    setGroupSaveError('')
+
+    try {
+      const response = await fetch(
+        `/api/v1/groups/${editingGroup.id}`,
+        {
+          method: 'DELETE',
+        },
+      )
+
+      if (!response.ok) {
+        let message = 'Could not delete group.'
+
+        try {
+          const data = await response.json()
+
+          if (typeof data?.detail === 'string') {
+            message = data.detail
+          }
+        } catch {
+          // Keep generic message.
+        }
+
+        throw new Error(message)
+      }
+
+      setDeleteGroupConfirmOpen(false)
+      setGroupModalOpen(false)
+      setEditingGroup(null)
+
+      await loadGroups()
+      await loadUsers()
+    } catch (error) {
+      setDeleteGroupConfirmOpen(false)
+
+      setGroupSaveError(
+        error instanceof Error
+          ? error.message
+          : 'Could not delete group.',
+      )
+    } finally {
+      setGroupDeleting(false)
+    }
+  }
+
+
+  async function saveGroup(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault()
+
+    if (!canManageGroups) {
+      return
+    }
+
+    setGroupSaving(true)
+    setGroupSaveError('')
+
+    try {
+      const isEditing = editingGroup !== null
+
+      const response = await fetch(
+        isEditing
+          ? `/api/v1/groups/${editingGroup.id}`
+          : '/api/v1/groups',
+        {
+          method: isEditing ? 'PATCH' : 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            name: groupName,
+            description: groupDescription,
+            permissions: groupPermissionKeys,
+          }),
+        },
+      )
+
+      if (!response.ok) {
+        let message = 'Could not save group.'
+
+        try {
+          const data = await response.json()
+
+          if (typeof data?.detail === 'string') {
+            message = data.detail
+          }
+        } catch {
+          // Keep generic message.
+        }
+
+        throw new Error(message)
+      }
+
+      setGroupModalOpen(false)
+      setEditingGroup(null)
+
+      await loadGroups()
+    } catch (error) {
+      setGroupSaveError(
+        error instanceof Error
+          ? error.message
+          : 'Could not save group.',
+      )
+    } finally {
+      setGroupSaving(false)
+    }
+  }
+
+
+  return (
+    <section>
+      <NavLink
+        to="/settings"
+        className="back-link"
+      >
+        ← Settings
+      </NavLink>
+
+      <div className="section-heading access-heading">
+        <div>
+          <h2>Access</h2>
+          <p>
+            Manage users, groups and permissions.
+          </p>
+        </div>
+
+        {activeTab === 'users' &&
+          canManageUsers && (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={openNewUser}
+            >
+              + Add user
+            </button>
+          )}
+
+        {activeTab === 'groups' &&
+          canManageGroups && (
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={openNewGroup}
+            >
+              + Add group
+            </button>
+          )}
+      </div>
+
+      <div className="access-tabs">
+        {canViewUsers && (
+          <button
+            type="button"
+            className={
+              activeTab === 'users'
+                ? 'access-tab active'
+                : 'access-tab'
+            }
+            onClick={() => setActiveTab('users')}
+          >
+            Users
+          </button>
+        )}
+
+        {canViewGroups && (
+          <button
+            type="button"
+            className={
+              activeTab === 'groups'
+                ? 'access-tab active'
+                : 'access-tab'
+            }
+            onClick={() => setActiveTab('groups')}
+          >
+            Groups
+          </button>
+        )}
+      </div>
+
+      {activeTab === 'users' && canViewUsers && (
+        <div className="panel access-list-panel">
+          {usersLoading ? (
+            <div className="empty-state">
+              Loading users...
+            </div>
+          ) : usersError ? (
+            <div className="modal-error">
+              {usersError}
+            </div>
+          ) : users.length === 0 ? (
+            <div className="empty-state">
+              No users found.
+            </div>
+          ) : (
+            <div className="access-list">
+              {users.map((user) => (
+                <div
+                  className="access-list-row"
+                  key={user.id}
+                >
+                  <div className="access-user-main">
+                    <div className="access-avatar">
+                      {(user.display_name ||
+                        user.username)
+                        .charAt(0)
+                        .toUpperCase()}
+                    </div>
+
+                    <div>
+                      <strong>
+                        {user.display_name ||
+                          user.username}
+                      </strong>
+
+                      <span>
+                        @{user.username}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="access-list-meta">
+                    <span className="access-auth-type">
+                      {user.auth_type}
+                    </span>
+
+                    <span>
+                      {user.groups.length > 0
+                        ? user.groups.join(', ')
+                        : 'No group'}
+                    </span>
+
+                    <span
+                      className={
+                        user.enabled
+                          ? 'access-status enabled'
+                          : 'access-status disabled'
+                      }
+                    >
+                      {user.enabled
+                        ? 'Enabled'
+                        : 'Disabled'}
+                    </span>
+
+                    {canManageUsers && (
+                      <button
+                        type="button"
+                        className="secondary-button compact-button"
+                        onClick={() =>
+                          openEditUser(user)
+                        }
+                      >
+                        Edit
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'groups' && canViewGroups && (
+        <div className="panel access-list-panel">
+          {groupsLoading ? (
+            <div className="empty-state">
+              Loading groups...
+            </div>
+          ) : groupsError ? (
+            <div className="modal-error">
+              {groupsError}
+            </div>
+          ) : groups.length === 0 ? (
+            <div className="empty-state">
+              No groups found.
+            </div>
+          ) : (
+            <div className="access-list">
+              {groups.map((group) => (
+                <div
+                  className="access-group-row"
+                  key={group.id}
+                >
+                  <div className="access-group-heading">
+                    <div className="access-group-title-block">
+                      <div className="access-group-title">
+                        <strong>{group.name}</strong>
+
+                        {group.builtin && (
+                          <span className="access-builtin">
+                            Built-in
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="access-group-meta">
+                        {group.description && (
+                          <span>{group.description}</span>
+                        )}
+
+                        {group.description && (
+                          <span aria-hidden="true">·</span>
+                        )}
+
+                        <span>
+                          {group.member_count}{' '}
+                          {group.member_count === 1
+                            ? 'member'
+                            : 'members'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {canManageGroups &&
+                      !group.builtin && (
+                        <button
+                          type="button"
+                          className="secondary-button compact-button"
+                          onClick={() =>
+                            openEditGroup(group)
+                          }
+                        >
+                          Edit
+                        </button>
+                      )}
+                  </div>
+
+                  {group.builtin ? (
+                    <div className="access-group-full-access">
+                      <span>Full access to FERPEK</span>
+                      <small>
+                        {group.permissions.length} permissions
+                      </small>
+                    </div>
+                  ) : (
+                    <div className="permission-chips access-group-permissions">
+                      {group.permissions.length === 0 ? (
+                        <span className="access-group-no-permissions">
+                          No permissions assigned
+                        </span>
+                      ) : (
+                        group.permissions.map(
+                          (permission) => (
+                            <span
+                              className="permission-chip"
+                              key={permission}
+                              title={permission}
+                            >
+                              {permissionLabel(permission)}
+                            </span>
+                          ),
+                        )
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {groupModalOpen && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setGroupModalOpen(false)
+            }
+          }}
+        >
+          <div className="modal access-group-modal">
+            <div className="modal-header">
+              <div>
+                <h2>
+                  {editingGroup
+                    ? 'Edit group'
+                    : 'Add group'}
+                </h2>
+
+                <p>
+                  {editingGroup
+                    ? `Manage ${editingGroup.name}.`
+                    : 'Create a FERPEK access group.'}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() =>
+                  setGroupModalOpen(false)
+                }
+                disabled={groupSaving}
+              >
+                ×
+              </button>
+            </div>
+
+            <form
+              className="access-user-form"
+              onSubmit={saveGroup}
+            >
+              <label>
+                <span>Group name</span>
+
+                <input
+                  type="text"
+                  value={groupName}
+                  minLength={1}
+                  maxLength={128}
+                  required
+                  onChange={(event) =>
+                    setGroupName(event.target.value)
+                  }
+                />
+              </label>
+
+              <label>
+                <span>Description</span>
+
+                <input
+                  type="text"
+                  value={groupDescription}
+                  maxLength={500}
+                  placeholder="Optional"
+                  onChange={(event) =>
+                    setGroupDescription(
+                      event.target.value,
+                    )
+                  }
+                />
+              </label>
+
+              <div className="access-form-section">
+                <div className="access-permissions-heading">
+                  <div>
+                    <span className="access-form-label">
+                      Permissions
+                    </span>
+
+                    <small>
+                      Select what members of this group
+                      can access or change.
+                    </small>
+                  </div>
+
+                  <span>
+                    {groupPermissionKeys.length}
+                    {' '}selected
+                  </span>
+                </div>
+
+                <div className="access-permission-search">
+                  <input
+                    type="search"
+                    value={permissionSearch}
+                    placeholder="Search permissions..."
+                    onChange={(event) =>
+                      setPermissionSearch(
+                        event.target.value,
+                      )
+                    }
+                  />
+                </div>
+
+                <div className="access-permission-list">
+                  {permissions
+                    .filter((permission) => {
+                      const query =
+                        permissionSearch
+                          .trim()
+                          .toLowerCase()
+
+                      if (!query) {
+                        return true
+                      }
+
+                      return (
+                        permissionLabel(
+                          permission.permission_key,
+                        )
+                          .toLowerCase()
+                          .includes(query) ||
+                        permission.permission_key
+                          .toLowerCase()
+                          .includes(query) ||
+                        (permission.description || '')
+                          .toLowerCase()
+                          .includes(query)
+                      )
+                    })
+                    .map((permission) => (
+                    <label
+                      className="access-permission-option"
+                      key={permission.permission_key}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={groupPermissionKeys.includes(
+                          permission.permission_key,
+                        )}
+                        onChange={() =>
+                          toggleGroupPermission(
+                            permission.permission_key,
+                          )
+                        }
+                      />
+
+                      <div>
+                        <strong>
+                          {permissionLabel(
+                            permission.permission_key,
+                          )}
+                        </strong>
+
+                        <span className="access-permission-key">
+                          {permission.permission_key}
+                        </span>
+
+                        {permission.description && (
+                          <span>
+                            {permission.description}
+                          </span>
+                        )}
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </div>
+
+              {groupSaveError && (
+                <div className="modal-error">
+                  {groupSaveError}
+                </div>
+              )}
+
+              <div className="modal-actions access-user-modal-actions">
+                <div>
+                  {editingGroup &&
+                    !editingGroup.builtin && (
+                      <button
+                        type="button"
+                        className="danger-button"
+                        onClick={() =>
+                          setDeleteGroupConfirmOpen(true)
+                        }
+                        disabled={
+                          groupSaving || groupDeleting
+                        }
+                      >
+                        Delete group
+                      </button>
+                    )}
+                </div>
+
+                <div className="access-user-modal-primary-actions">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() =>
+                      setGroupModalOpen(false)
+                    }
+                    disabled={
+                      groupSaving || groupDeleting
+                    }
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="submit"
+                    className="secondary-button"
+                    disabled={
+                      groupSaving || groupDeleting
+                    }
+                  >
+                    {groupSaving
+                      ? 'Saving...'
+                      : editingGroup
+                        ? 'Save changes'
+                        : 'Create group'}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {deleteGroupConfirmOpen && editingGroup && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setDeleteGroupConfirmOpen(false)
+            }
+          }}
+        >
+          <div className="modal delete-user-modal">
+            <div className="modal-header">
+              <div>
+                <h2>Delete group</h2>
+                <p>
+                  Permanently remove {editingGroup.name}
+                  {' '}from FERPEK.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() =>
+                  setDeleteGroupConfirmOpen(false)
+                }
+                disabled={groupDeleting}
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="delete-user-warning">
+              {editingGroup.member_count > 0 ? (
+                <>
+                  {editingGroup.member_count}{' '}
+                  {editingGroup.member_count === 1
+                    ? 'user is'
+                    : 'users are'} currently assigned to
+                  this group. Their accounts will remain,
+                  but this group membership will be removed.
+                </>
+              ) : (
+                <>
+                  This group has no members. Its permissions
+                  and configuration will be permanently
+                  removed.
+                </>
+              )}
+            </div>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() =>
+                  setDeleteGroupConfirmOpen(false)
+                }
+                disabled={groupDeleting}
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                className="danger-button"
+                onClick={() => void deleteGroup()}
+                disabled={groupDeleting}
+              >
+                {groupDeleting
+                  ? 'Deleting...'
+                  : 'Delete group'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {userModalOpen && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setUserModalOpen(false)
+            }
+          }}
+        >
+          <div className="modal access-user-modal">
+            <div className="modal-header">
+              <div>
+                <h2>
+                  {editingUser
+                    ? 'Edit user'
+                    : 'Add user'}
+                </h2>
+
+                <p>
+                  {editingUser
+                    ? `Manage @${editingUser.username}.`
+                    : 'Create a local FERPEK account.'}
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() =>
+                  setUserModalOpen(false)
+                }
+              >
+                ×
+              </button>
+            </div>
+
+            <form
+              className="access-user-form"
+              onSubmit={saveUser}
+            >
+              <label>
+                <span>Username</span>
+
+                <input
+                  type="text"
+                  value={userUsername}
+                  minLength={3}
+                  maxLength={64}
+                  pattern="[A-Za-z0-9._-]+"
+                  required
+                  onChange={(event) =>
+                    setUserUsername(
+                      event.target.value,
+                    )
+                  }
+                />
+              </label>
+
+              <label>
+                <span>Display name</span>
+
+                <input
+                  type="text"
+                  value={userDisplayName}
+                  maxLength={128}
+                  onChange={(event) =>
+                    setUserDisplayName(
+                      event.target.value,
+                    )
+                  }
+                />
+              </label>
+
+              <label>
+                <span>Email</span>
+
+                <input
+                  type="email"
+                  value={userEmail}
+                  maxLength={254}
+                  onChange={(event) =>
+                    setUserEmail(
+                      event.target.value,
+                    )
+                  }
+                />
+              </label>
+
+              <label>
+                <span>
+                  {editingUser
+                    ? 'New password'
+                    : 'Password'}
+                </span>
+
+                <input
+                  type="password"
+                  value={userPassword}
+                  minLength={12}
+                  maxLength={256}
+                  required={!editingUser}
+                  autoComplete="new-password"
+                  placeholder={
+                    editingUser
+                      ? 'Leave blank to keep current password'
+                      : ''
+                  }
+                  onChange={(event) =>
+                    setUserPassword(
+                      event.target.value,
+                    )
+                  }
+                />
+              </label>
+
+              {canViewGroups && (
+                <div className="access-form-section">
+                  <span className="access-form-label">
+                    Groups
+                  </span>
+
+                  <div className="access-selected-groups">
+                    {userGroupIds.length === 0 ? (
+                      <span className="access-no-groups">
+                        No groups assigned
+                      </span>
+                    ) : (
+                      userGroupIds.map((groupId) => {
+                        const group = groups.find(
+                          (candidate) =>
+                            candidate.id === groupId,
+                        )
+
+                        if (!group) {
+                          return null
+                        }
+
+                        return (
+                          <span
+                            className="access-group-chip"
+                            key={group.id}
+                          >
+                            {group.name}
+
+                            <button
+                              type="button"
+                              aria-label={`Remove ${group.name}`}
+                              onClick={() =>
+                                toggleUserGroup(group.id)
+                              }
+                            >
+                              ×
+                            </button>
+                          </span>
+                        )
+                      })
+                    )}
+
+                    <div className="access-group-picker">
+                      <button
+                        type="button"
+                        className="secondary-button compact-button"
+                        onClick={() =>
+                          setGroupPickerOpen(
+                            (current) => !current,
+                          )
+                        }
+                      >
+                        + Add group
+                      </button>
+
+                      {groupPickerOpen && (
+                        <div className="access-group-menu">
+                          {groups.filter(
+                            (group) =>
+                              !userGroupIds.includes(
+                                group.id,
+                              ),
+                          ).length === 0 ? (
+                            <span className="access-group-menu-empty">
+                              No groups available
+                            </span>
+                          ) : (
+                            groups
+                              .filter(
+                                (group) =>
+                                  !userGroupIds.includes(
+                                    group.id,
+                                  ),
+                              )
+                              .map((group) => {
+                                const administratorsSelected =
+                                  groups.some(
+                                    (candidate) =>
+                                      candidate.name ===
+                                        'Administrators' &&
+                                      userGroupIds.includes(
+                                        candidate.id,
+                                      ),
+                                  )
+
+                                const disabled =
+                                  administratorsSelected &&
+                                  group.name !==
+                                    'Administrators'
+
+                                return (
+                                  <button
+                                    type="button"
+                                    className="access-group-menu-item"
+                                    key={group.id}
+                                    disabled={disabled}
+                                    onClick={() => {
+                                      toggleUserGroup(
+                                        group.id,
+                                      )
+                                      setGroupPickerOpen(false)
+                                    }}
+                                  >
+                                    <strong>
+                                      {group.name}
+                                    </strong>
+
+                                    {group.description && (
+                                      <span>
+                                        {group.description}
+                                      </span>
+                                    )}
+                                  </button>
+                                )
+                              })
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {editingUser && (
+                <div className="access-form-section">
+                  <span className="access-form-label">
+                    Account status
+                  </span>
+
+                  <label className="access-enabled-option">
+                    <input
+                      type="checkbox"
+                      checked={userEnabled}
+                      disabled={
+                        editingUser.id ===
+                        currentUser.id
+                      }
+                      onChange={(event) =>
+                        setUserEnabled(
+                          event.target.checked,
+                        )
+                      }
+                    />
+
+                    <span>
+                      Enabled
+                    </span>
+                  </label>
+
+                  {editingUser.id ===
+                    currentUser.id && (
+                    <span className="access-form-help">
+                      You cannot disable your own account.
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {userSaveError && (
+                <div className="modal-error">
+                  {userSaveError}
+                </div>
+              )}
+
+              <div className="modal-actions access-user-modal-actions">
+                <div>
+                  {editingUser &&
+                    editingUser.id !== currentUser.id && (
+                      <button
+                        type="button"
+                        className="danger-button"
+                        onClick={() =>
+                          setDeleteUserConfirmOpen(true)
+                        }
+                        disabled={
+                          userSaving || userDeleting
+                        }
+                      >
+                        Delete user
+                      </button>
+                    )}
+                </div>
+
+                <div className="access-user-modal-primary-actions">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() =>
+                      setUserModalOpen(false)
+                    }
+                    disabled={
+                      userSaving || userDeleting
+                    }
+                  >
+                    Cancel
+                  </button>
+
+                  <button
+                    type="submit"
+                    className="secondary-button"
+                    disabled={
+                      userSaving || userDeleting
+                    }
+                  >
+                    {userSaving
+                      ? 'Saving...'
+                      : editingUser
+                        ? 'Save changes'
+                        : 'Create user'}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+      {deleteUserConfirmOpen && editingUser && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) {
+              setDeleteUserConfirmOpen(false)
+            }
+          }}
+        >
+          <div className="modal delete-user-modal">
+            <div className="modal-header">
+              <div>
+                <h2>Delete user</h2>
+                <p>
+                  Permanently remove @{editingUser.username}
+                  {' '}from FERPEK.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="modal-close"
+                onClick={() =>
+                  setDeleteUserConfirmOpen(false)
+                }
+                disabled={userDeleting}
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="delete-user-warning">
+              This action cannot be undone. The account,
+              group memberships and active sessions will be
+              removed.
+            </div>
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() =>
+                  setDeleteUserConfirmOpen(false)
+                }
+                disabled={userDeleting}
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                className="danger-button"
+                onClick={() => void deleteUser()}
+                disabled={userDeleting}
+              >
+                {userDeleting
+                  ? 'Deleting...'
+                  : 'Delete user'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </section>
+  )
+}
+
+
+function Settings({
+  currentUser,
+}: {
+  currentUser: CurrentUser
+}) {
   const [
     allowCommunityPacks,
     setAllowCommunityPacks,
@@ -4362,6 +6485,10 @@ function Settings() {
   }, [])
 
   async function savePackSettings() {
+    if (!hasPermission(currentUser, 'settings.manage')) {
+      return
+    }
+
     setPackSettingsSaving(true)
     setPackSettingsMessage("")
     setPackSettingsError("")
@@ -4403,6 +6530,10 @@ function Settings() {
 
 
   async function saveRetentionSettings() {
+    if (!hasPermission(currentUser, 'settings.manage')) {
+      return
+    }
+
     setRetentionSaving(true)
     setRetentionMessage("")
     setRetentionError("")
@@ -4455,15 +6586,39 @@ function Settings() {
 
       <div className="settings-sections">
         <div className="panel core-settings-panel">
+          {(hasPermission(currentUser, 'users.view') ||
+            hasPermission(currentUser, 'groups.view')) && (
+            <div className="core-setting-row">
+              <div>
+                <h3>Access</h3>
+                <p>
+                  Users, groups and permissions.
+                </p>
+              </div>
+
+              <NavLink
+                to="/settings/access"
+                className="secondary-button"
+              >
+                Manage
+              </NavLink>
+            </div>
+          )}
+
           <div className="core-setting-row">
             <div>
               <h3>Server</h3>
               <p>Server identity, URL and connectivity settings.</p>
             </div>
 
-            <button className="secondary-button">
-              Configure
-            </button>
+            {hasPermission(
+              currentUser,
+              'settings.manage',
+            ) && (
+              <button className="secondary-button">
+                Configure
+              </button>
+            )}
           </div>
 
           <div className="core-setting-row">
@@ -4472,9 +6627,14 @@ function Settings() {
               <p>Enrollment and agent configuration.</p>
             </div>
 
-            <button className="secondary-button">
-              Configure
-            </button>
+            {hasPermission(
+              currentUser,
+              'settings.manage',
+            ) && (
+              <button className="secondary-button">
+                Configure
+              </button>
+            )}
           </div>
 
           <div className="core-setting-row">
@@ -4483,9 +6643,14 @@ function Settings() {
               <p>Patterns and finding behaviour.</p>
             </div>
 
-            <button className="secondary-button">
-              Configure
-            </button>
+            {hasPermission(
+              currentUser,
+              'settings.manage',
+            ) && (
+              <button className="secondary-button">
+                Configure
+              </button>
+            )}
           </div>
         </div>
 
@@ -4526,6 +6691,12 @@ function Settings() {
                   <input
                     type="checkbox"
                     checked={allowCommunityPacks}
+                    disabled={
+                      !hasPermission(
+                        currentUser,
+                        'settings.manage',
+                      )
+                    }
                     onChange={(event) =>
                       setAllowCommunityPacks(
                         event.target.checked,
@@ -4548,6 +6719,12 @@ function Settings() {
                   <input
                     type="checkbox"
                     checked={allowLocalPacks}
+                    disabled={
+                      !hasPermission(
+                        currentUser,
+                        'settings.manage',
+                      )
+                    }
                     onChange={(event) =>
                       setAllowLocalPacks(
                         event.target.checked,
@@ -4573,17 +6750,22 @@ function Settings() {
                   )}
                 </div>
 
-                <button
-                  className="secondary-button"
-                  onClick={() =>
-                    void savePackSettings()
-                  }
-                  disabled={packSettingsSaving}
-                >
-                  {packSettingsSaving
-                    ? "Saving..."
-                    : "Save changes"}
-                </button>
+                {hasPermission(
+                  currentUser,
+                  'settings.manage',
+                ) && (
+                  <button
+                    className="secondary-button"
+                    onClick={() =>
+                      void savePackSettings()
+                    }
+                    disabled={packSettingsSaving}
+                  >
+                    {packSettingsSaving
+                      ? "Saving..."
+                      : "Save changes"}
+                  </button>
+                )}
               </div>
             </>
           )}
@@ -4608,6 +6790,12 @@ function Settings() {
                   <input
                     id="event-retention"
                     type="number"
+                    disabled={
+                      !hasPermission(
+                        currentUser,
+                        'settings.manage',
+                      )
+                    }
                     min="1"
                     max="3650"
                     value={eventRetentionDays}
@@ -4630,6 +6818,12 @@ function Settings() {
                   <input
                     id="relevant-retention"
                     type="number"
+                    disabled={
+                      !hasPermission(
+                        currentUser,
+                        'settings.manage',
+                      )
+                    }
                     min="1"
                     max="3650"
                     value={relevantRetentionDays}
@@ -4652,6 +6846,12 @@ function Settings() {
                   <input
                     id="finding-retention"
                     type="number"
+                    disabled={
+                      !hasPermission(
+                        currentUser,
+                        'settings.manage',
+                      )
+                    }
                     min="1"
                     max="3650"
                     value={
@@ -4687,17 +6887,22 @@ function Settings() {
                   )}
                 </div>
 
-                <button
-                  className="secondary-button"
-                  onClick={() =>
-                    void saveRetentionSettings()
-                  }
-                  disabled={retentionSaving}
-                >
-                  {retentionSaving
-                    ? "Saving..."
-                    : "Save changes"}
-                </button>
+                {hasPermission(
+                  currentUser,
+                  'settings.manage',
+                ) && (
+                  <button
+                    className="secondary-button"
+                    onClick={() =>
+                      void saveRetentionSettings()
+                    }
+                    disabled={retentionSaving}
+                  >
+                    {retentionSaving
+                      ? "Saving..."
+                      : "Save changes"}
+                  </button>
+                )}
               </div>
             </>
           )}
@@ -4707,7 +6912,43 @@ function Settings() {
   )
 }
 
-function Layout() {
+function AccessDenied() {
+  return (
+    <section>
+      <div className="panel">
+        <div className="empty-state">
+          You do not have permission to access this page.
+        </div>
+      </div>
+    </section>
+  )
+}
+
+
+function RequirePermission({
+  currentUser,
+  permission,
+  children,
+}: {
+  currentUser: CurrentUser
+  permission: string
+  children: React.ReactNode
+}) {
+  if (!hasPermission(currentUser, permission)) {
+    return <AccessDenied />
+  }
+
+  return <>{children}</>
+}
+
+
+function Layout({
+  currentUser,
+  onLogout,
+}: {
+  currentUser: CurrentUser
+  onLogout: () => void
+}) {
   const location = useLocation()
 
   const [theme, setTheme] = useState<'dark' | 'light'>(() => {
@@ -4730,7 +6971,10 @@ function Layout() {
   return (
     <div className="app">
       <GlobalTooltip />
-      <Sidebar />
+      <Sidebar
+        currentUser={currentUser}
+        onLogout={onLogout}
+      />
 
       <main className="main">
         <header className="topbar">
@@ -4766,13 +7010,89 @@ function Layout() {
 
         <div className="content">
           <Routes>
-            <Route path="/" element={<Overview />} />
-            <Route path="/systems" element={<Systems />} />
-            <Route path="/systems/:id" element={<HostDetail />} />
-            <Route path="/findings" element={<Findings />} />
-            <Route path="/activity" element={<Activity />} />
-            <Route path="/packs" element={<Packs />} />
-            <Route path="/settings" element={<Settings />} />
+            <Route
+              path="/"
+              element={
+                <Overview currentUser={currentUser} />
+              }
+            />
+            <Route
+              path="/systems"
+              element={
+                <RequirePermission
+                  currentUser={currentUser}
+                  permission="hosts.view"
+                >
+                  <Systems currentUser={currentUser} />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="/systems/:id"
+              element={
+                <RequirePermission
+                  currentUser={currentUser}
+                  permission="hosts.view"
+                >
+                  <HostDetail currentUser={currentUser} />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="/findings"
+              element={
+                <RequirePermission
+                  currentUser={currentUser}
+                  permission="findings.view"
+                >
+                  <Findings currentUser={currentUser} />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="/activity"
+              element={
+                <RequirePermission
+                  currentUser={currentUser}
+                  permission="logs.view"
+                >
+                  <Activity />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="/packs"
+              element={
+                <RequirePermission
+                  currentUser={currentUser}
+                  permission="packs.view"
+                >
+                  <Packs currentUser={currentUser} />
+                </RequirePermission>
+              }
+            />
+            <Route
+              path="/settings"
+              element={
+                hasPermission(currentUser, 'settings.view') ||
+                hasPermission(currentUser, 'users.view') ||
+                hasPermission(currentUser, 'groups.view') ? (
+                  <Settings currentUser={currentUser} />
+                ) : (
+                  <AccessDenied />
+                )
+              }
+            />
+
+            {(hasPermission(currentUser, 'users.view') ||
+              hasPermission(currentUser, 'groups.view')) && (
+              <Route
+                path="/settings/access"
+                element={
+                  <AccessPage currentUser={currentUser} />
+                }
+              />
+            )}
           </Routes>
         </div>
       </main>
@@ -4780,10 +7100,485 @@ function Layout() {
   )
 }
 
+type AuthMode =
+  | 'loading'
+  | 'setup'
+  | 'login'
+  | 'authenticated'
+
+function FerpekAuthBrand() {
+  return (
+    <div className="auth-brand">
+      <span className="auth-brand-mark">◇</span>
+
+      <div>
+        <strong>FERPEK</strong>
+        <span>LENS</span>
+      </div>
+    </div>
+  )
+}
+
+function LoginScreen({
+  onAuthenticated,
+}: {
+  onAuthenticated: () => void
+}) {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  async function handleSubmit(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault()
+
+    setError('')
+    setSubmitting(true)
+
+    try {
+      const response = await fetch('/api/v1/auth/login', {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          username,
+          password,
+        }),
+      })
+
+      if (!response.ok) {
+        setError('Invalid username or password.')
+        return
+      }
+
+      onAuthenticated()
+    } catch {
+      setError('Unable to contact the FERPEK server.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="auth-page">
+      <div className="auth-panel">
+        <FerpekAuthBrand />
+
+        <div className="auth-heading">
+          <h1>Sign in</h1>
+          <p>Sign in to your FERPEK Lens instance.</p>
+        </div>
+
+        <form
+          className="auth-form"
+          onSubmit={handleSubmit}
+        >
+          <label>
+            <span>Username</span>
+            <input
+              autoFocus
+              autoComplete="username"
+              value={username}
+              onChange={(event) =>
+                setUsername(event.target.value)
+              }
+              required
+            />
+          </label>
+
+          <label>
+            <span>Password</span>
+            <input
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(event) =>
+                setPassword(event.target.value)
+              }
+              required
+            />
+          </label>
+
+          {error && (
+            <div className="auth-error">
+              {error}
+            </div>
+          )}
+
+          <button
+            className={`auth-submit ${
+              username.trim() && password
+                ? 'primary-button'
+                : 'auth-submit-disabled'
+            }`}
+            type="submit"
+            disabled={
+              submitting ||
+              !username.trim() ||
+              !password
+            }
+          >
+            {submitting ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function InitialSetupScreen({
+  onAuthenticated,
+}: {
+  onAuthenticated: () => void
+}) {
+  const [username, setUsername] = useState('admin')
+  const [displayName, setDisplayName] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [error, setError] = useState('')
+  const [submitting, setSubmitting] = useState(false)
+
+  async function handleSubmit(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault()
+
+    setError('')
+
+    if (password.length < 12) {
+      setError(
+        'Password must contain at least 12 characters.',
+      )
+      return
+    }
+
+    if (password !== confirmPassword) {
+      setError('Passwords do not match.')
+      return
+    }
+
+    setSubmitting(true)
+
+    try {
+      const setupResponse = await fetch(
+        '/api/v1/auth/setup',
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            username,
+            display_name: displayName,
+            email,
+            password,
+          }),
+        },
+      )
+
+      if (!setupResponse.ok) {
+        const data = await setupResponse
+          .json()
+          .catch(() => null)
+
+        setError(
+          data?.detail ||
+            'Unable to complete FERPEK setup.',
+        )
+        return
+      }
+
+      const loginResponse = await fetch(
+        '/api/v1/auth/login',
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            username,
+            password,
+          }),
+        },
+      )
+
+      if (!loginResponse.ok) {
+        setError(
+          'Setup completed, but automatic sign-in failed.',
+        )
+        return
+      }
+
+      onAuthenticated()
+    } catch {
+      setError('Unable to contact the FERPEK server.')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  return (
+    <div className="auth-page">
+      <div className="auth-panel auth-panel-setup">
+        <FerpekAuthBrand />
+
+        <div className="auth-heading">
+          <h1>Set up FERPEK</h1>
+          <p>
+            Create the first administrator account for
+            this FERPEK Lens instance.
+          </p>
+        </div>
+
+        <form
+          className="auth-form"
+          onSubmit={handleSubmit}
+        >
+          <label>
+            <span>Username</span>
+            <input
+              autoFocus
+              autoComplete="username"
+              value={username}
+              onChange={(event) =>
+                setUsername(event.target.value)
+              }
+              required
+            />
+          </label>
+
+          <label>
+            <span>Display name</span>
+            <input
+              value={displayName}
+              onChange={(event) =>
+                setDisplayName(event.target.value)
+              }
+            />
+          </label>
+
+          <label>
+            <span>Email</span>
+            <input
+              type="email"
+              autoComplete="email"
+              value={email}
+              onChange={(event) =>
+                setEmail(event.target.value)
+              }
+            />
+          </label>
+
+          <label>
+            <span>Password</span>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={password}
+              onChange={(event) =>
+                setPassword(event.target.value)
+              }
+              required
+            />
+          </label>
+
+          <label>
+            <span>Confirm password</span>
+            <input
+              type="password"
+              autoComplete="new-password"
+              value={confirmPassword}
+              onChange={(event) =>
+                setConfirmPassword(event.target.value)
+              }
+              required
+            />
+          </label>
+
+          <p className="auth-password-hint">
+            Minimum 12 characters.
+          </p>
+
+          {error && (
+            <div className="auth-error">
+              {error}
+            </div>
+          )}
+
+          <button
+            className="primary-button auth-submit"
+            type="submit"
+            disabled={submitting}
+          >
+            {submitting
+              ? 'Creating administrator…'
+              : 'Create administrator'}
+          </button>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function AuthGate() {
+  const navigate = useNavigate()
+
+  const [mode, setMode] =
+    useState<AuthMode>('loading')
+
+  const [currentUser, setCurrentUser] =
+    useState<CurrentUser | null>(null)
+
+  async function completeAuthentication() {
+    try {
+      const response = await fetch(
+        '/api/v1/auth/me',
+        {
+          credentials: 'include',
+        },
+      )
+
+      if (!response.ok) {
+        setCurrentUser(null)
+        setMode('login')
+        return
+      }
+
+      const user: CurrentUser = await response.json()
+
+      setCurrentUser(user)
+      setMode('authenticated')
+      navigate('/', { replace: true })
+    } catch {
+      setCurrentUser(null)
+      setMode('login')
+    }
+  }
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function checkAuthentication() {
+      try {
+        const setupResponse = await fetch(
+          '/api/v1/auth/setup',
+          {
+            credentials: 'include',
+          },
+        )
+
+        if (!setupResponse.ok) {
+          throw new Error('Setup status request failed')
+        }
+
+        const setup = await setupResponse.json()
+
+        if (cancelled) {
+          return
+        }
+
+        if (setup.setup_required) {
+          setMode('setup')
+          return
+        }
+
+        const sessionResponse = await fetch(
+          '/api/v1/auth/me',
+          {
+            credentials: 'include',
+          },
+        )
+
+        if (cancelled) {
+          return
+        }
+
+        if (sessionResponse.ok) {
+          const user: CurrentUser =
+            await sessionResponse.json()
+
+          if (cancelled) {
+            return
+          }
+
+          setCurrentUser(user)
+          setMode('authenticated')
+        } else {
+          setCurrentUser(null)
+          setMode('login')
+        }
+      } catch {
+        if (!cancelled) {
+          setMode('login')
+        }
+      }
+    }
+
+    checkAuthentication()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  if (mode === 'loading') {
+    return (
+      <div className="auth-page">
+        <div className="auth-loading">
+          <FerpekAuthBrand />
+          <span>Loading FERPEK Lens…</span>
+        </div>
+      </div>
+    )
+  }
+
+  if (mode === 'setup') {
+    return (
+      <InitialSetupScreen
+        onAuthenticated={() =>
+          void completeAuthentication()
+        }
+      />
+    )
+  }
+
+  if (mode === 'login') {
+    return (
+      <LoginScreen
+        onAuthenticated={() =>
+          void completeAuthentication()
+        }
+      />
+    )
+  }
+
+  if (!currentUser) {
+    return null
+  }
+
+  return (
+    <Layout
+      currentUser={currentUser}
+      onLogout={() => {
+        navigate('/', { replace: true })
+        setCurrentUser(null)
+        setMode('login')
+      }}
+    />
+  )
+}
+
 function App() {
   return (
     <BrowserRouter>
-      <Layout />
+      <AuthGate />
     </BrowserRouter>
   )
 }
