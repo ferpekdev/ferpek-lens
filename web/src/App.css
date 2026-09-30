@@ -1,3 +1,50 @@
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg: #121517;
+  --sidebar: #181c1f;
+  --topbar: #1a1f22;
+  --surface: #20262a;
+  --surface-hover: #282f34;
+  --surface-active: #2c3338;
+
+  --border: #323a3f;
+  --border-soft: #293035;
+
+  --text: #e8ecef;
+  --text-strong: #f5f7f8;
+  --text-muted: #96a1a8;
+  --text-dim: #68747b;
+
+  --brand: #c46a36;
+  --brand-hover: #d87a42;
+  --brand-soft: rgba(196, 106, 54, 0.14);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f2f4f5;
+  --sidebar: #ffffff;
+  --topbar: #ffffff;
+  --surface: #ffffff;
+  --surface-hover: #f3f5f6;
+  --surface-active: #eceff1;
+
+  --border: #d5dade;
+  --border-soft: #e2e6e8;
+
+  --text: #252b2f;
+  --text-strong: #171b1e;
+  --text-muted: #67737a;
+  --text-dim: #89949a;
+
+  --brand: #b85f31;
+  --brand-hover: #cb6b36;
+  --brand-soft: rgba(184, 95, 49, 0.12);
+}
+
 * {
   box-sizing: border-box;
 }
@@ -9,16 +56,16 @@ button {
 .app {
   min-height: 100vh;
   display: flex;
-  background: #171b21;
-  color: #e8ebef;
+  background: var(--bg);
+  color: var(--text);
 }
 
 .sidebar {
   position: fixed;
   inset: 0 auto 0 0;
   width: 240px;
-  background: #1c2128;
-  border-right: 1px solid #30363f;
+  background: var(--sidebar);
+  border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   padding: 24px 14px 18px;
@@ -29,11 +76,11 @@ button {
   align-items: center;
   gap: 11px;
   padding: 0 10px 25px;
-  border-bottom: 1px solid #30363f;
+  border-bottom: 1px solid var(--border);
 }
 
 .brand-mark {
-  color: #28c995;
+  color: var(--brand);
   font-size: 28px;
   line-height: 1;
 }
@@ -46,7 +93,7 @@ button {
 
 .brand-subtitle {
   margin-top: 3px;
-  color: #77818e;
+  color: var(--text-dim);
   font-size: 11px;
 }
 
@@ -66,36 +113,36 @@ button {
   align-items: center;
   gap: 12px;
   border-radius: 6px;
-  color: #9ba5b2;
+  color: var(--text-muted);
   background: transparent;
   cursor: pointer;
   text-align: left;
 }
 
 .nav-item:hover {
-  background: #242a32;
-  color: #e8ebef;
+  background: var(--surface-hover);
+  color: var(--text);
 }
 
 .nav-item.active {
-  background: #262d35;
-  color: #f1f3f5;
-  box-shadow: inset 2px 0 #28c995;
+  background: var(--surface-active);
+  color: var(--text-strong);
+  box-shadow: inset 3px 0 var(--brand);
 }
 
 .nav-icon {
   width: 18px;
   text-align: center;
-  color: #77818e;
+  color: var(--text-dim);
 }
 
 .nav-item.active .nav-icon {
-  color: #28c995;
+  color: var(--brand);
 }
 
 .nav-count {
   margin-left: auto;
-  color: #77818e;
+  color: var(--text-dim);
   font-size: 12px;
 }
 
@@ -126,8 +173,8 @@ button {
 .topbar {
   height: 82px;
   padding: 0 34px;
-  border-bottom: 1px solid #30363f;
-  background: #1b2026;
+  border-bottom: 1px solid var(--border);
+  background: var(--topbar);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -149,7 +196,7 @@ button {
   display: flex;
   align-items: center;
   gap: 9px;
-  color: #aab2bd;
+  color: var(--text-muted);
   font-size: 12px;
 }
 
@@ -173,7 +220,7 @@ section {
 .section-heading h2,
 .panel-header h2 {
   margin: 0;
-  color: #e8ebef;
+  color: var(--text);
   font-size: 14px;
   font-weight: 600;
 }
@@ -198,8 +245,8 @@ section {
 
 .stat-card,
 .panel {
-  background: #20262d;
-  border: 1px solid #303740;
+  background: var(--surface);
+  border: 1px solid var(--border);
   border-radius: 7px;
 }
 
@@ -285,10 +332,10 @@ section {
 }
 
 .findings-list {
-  border: 1px solid #303740;
+  border: 1px solid var(--border);
   border-radius: 7px;
   overflow: hidden;
-  background: #20262d;
+  background: var(--surface);
 }
 
 .finding {
@@ -316,7 +363,7 @@ section {
   display: flex;
   align-items: center;
   gap: 8px;
-  color: #77818e;
+  color: var(--text-dim);
   font-size: 10px;
 }
 
@@ -568,7 +615,7 @@ section {
 
 .modal {
   width: min(680px, 100%);
-  background: #20262d;
+  background: var(--surface);
   border: 1px solid #3a434e;
   border-radius: 8px;
   box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
@@ -619,7 +666,7 @@ section {
 }
 
 .platform-icon {
-  color: #28c995;
+  color: var(--brand);
   font-size: 24px;
 }
 
@@ -734,7 +781,7 @@ section {
   display: flex;
   align-items: center;
   gap: 10px;
-  color: #9ba5b2;
+  color: var(--text-muted);
   font-size: 11px;
 }
 
@@ -2575,7 +2622,7 @@ section {
   min-height: 480px;
   max-height: 65vh;
   margin-top: 18px;
-  border: 1px solid #303740;
+  border: 1px solid var(--border);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -2583,7 +2630,7 @@ section {
 .pack-file-list {
   padding: 10px;
   border-right: 1px solid #303740;
-  background: #1b2026;
+  background: var(--topbar);
   overflow-y: auto;
 }
 
@@ -3142,4 +3189,1402 @@ section {
 /* Pack state indicator does not use the global tooltip positioning */
 .pack-state-indicator {
   position: absolute;
+}
+
+/* FERPEK Lens identity + theme controls */
+
+.brand-mark {
+  color: var(--brand);
+}
+
+.brand-name {
+  color: var(--text-strong);
+  letter-spacing: 0.14em;
+}
+
+.brand-subtitle {
+  color: var(--brand);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.theme-toggle {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+}
+
+.theme-toggle:hover {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+.server-state {
+  color: var(--text-muted);
+}
+
+/* FERPEK Lens identity + theme controls */
+
+.brand-mark {
+  color: var(--brand);
+}
+
+.brand-name {
+  color: var(--text-strong);
+  letter-spacing: 0.14em;
+}
+
+.brand-subtitle {
+  color: var(--brand);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.22em;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+
+.theme-toggle {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+}
+
+.theme-toggle:hover {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+.server-state {
+  color: var(--text-muted);
+}
+
+/* =========================================================
+   FERPEK Lens theme component pass
+   ========================================================= */
+
+/* Primary actions belong to the FERPEK copper identity */
+
+.primary-button {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+.primary-button:hover:not(:disabled) {
+  border-color: var(--brand-hover);
+  background: var(--brand-soft);
+  color: var(--brand-hover);
+}
+
+/* Neutral actions */
+
+.secondary-button {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.secondary-button:hover:not(:disabled) {
+  border-color: var(--brand);
+  background: var(--surface-hover);
+  color: var(--text-strong);
+}
+
+/* Generic filters */
+
+.filter-button {
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+.filter-button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.filter-button.selected {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+/* Host rows */
+
+.system-row {
+  border-color: var(--border-soft);
+  color: var(--text);
+}
+
+.system-row strong,
+.host-title-line strong {
+  color: var(--text-strong);
+}
+
+.host-inline-meta,
+.host-inline-meta span {
+  color: var(--text-muted);
+}
+
+.host-meta > span {
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+.host-icon-button {
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+
+.host-icon-button:hover {
+  border-color: var(--brand);
+  background: var(--surface-hover);
+  color: var(--text-strong);
+}
+
+/* Packs */
+
+.packs-page {
+  color: var(--text);
+}
+
+.pack-row {
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.packs-page .pack-row:first-child {
+  border-top-color: var(--border);
+}
+
+.pack-title-row strong {
+  color: var(--text-strong);
+}
+
+.pack-version,
+.pack-main > p,
+.pack-main p,
+.pack-meta,
+.packs-heading-count {
+  color: var(--text-muted);
+}
+
+.pack-row-actions {
+  border-top-color: var(--border-soft);
+}
+
+.pack-search-input {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.pack-search-input::placeholder {
+  color: var(--text-dim);
+}
+
+.pack-search-input:focus {
+  border-color: var(--brand);
+  background: var(--surface);
+}
+
+.pack-state-action.disable {
+  color: var(--text-muted);
+}
+
+.pack-state-action.disable:hover:not(:disabled) {
+  color: var(--text-strong);
+}
+
+/* Keep enabled state green: this is status, not branding */
+
+.pack-state-indicator.enabled,
+.pack-state-action.enable {
+  color: #43cfa1;
+}
+
+/* Pack tabs */
+
+.pack-tabs button {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+.pack-tabs button:not(:disabled):hover {
+  border-color: var(--brand);
+  color: var(--brand);
+}
+
+/* Modals */
+
+.modal {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.modal-header {
+  border-bottom-color: var(--border);
+}
+
+.modal-header p,
+.modal-close {
+  color: var(--text-muted);
+}
+
+.modal-close:hover {
+  color: var(--text-strong);
+}
+
+.platform-row {
+  border-color: var(--border);
+  background: var(--surface-hover);
+}
+
+.platform-row span {
+  color: var(--text-muted);
+}
+
+/* Sources */
+
+.sources-table {
+  border-color: var(--border);
+}
+
+.sources-table-header {
+  border-bottom-color: var(--border);
+  background: var(--surface-hover);
+  color: var(--text-muted);
+}
+
+.source-row {
+  border-bottom-color: var(--border-soft);
+}
+
+.source-description strong {
+  color: var(--text-strong);
+}
+
+.source-description > span,
+.source-badge,
+.sources-note,
+.sources-explanation {
+  color: var(--text-muted);
+}
+
+.source-badge {
+  border-color: var(--border);
+}
+
+/* Settings */
+
+.setting-card p,
+.core-setting-row p,
+.pack-setting-row span,
+.retention-input-row span,
+.retention-field > span {
+  color: var(--text-muted);
+}
+
+.core-setting-row,
+.pack-setting-row,
+.pack-management-actions,
+.retention-actions {
+  border-color: var(--border-soft);
+}
+
+.retention-input-row input {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text);
+  color-scheme: inherit;
+}
+
+.retention-input-row input:focus {
+  border-color: var(--brand);
+}
+
+/* Tooltips must also work in light mode */
+
+.tooltip::before {
+  border-color: var(--border);
+  background: var(--text-strong);
+  color: var(--bg);
+}
+
+.tooltip::after {
+  background: var(--text-strong);
+  border-right-color: var(--border);
+  border-bottom-color: var(--border);
+}
+
+/* FERPEK Lens compact navigation */
+
+.sidebar {
+  width: 218px;
+  padding: 18px 12px 14px;
+}
+
+.main {
+  width: calc(100% - 218px);
+  margin-left: 218px;
+}
+
+.brand {
+  gap: 9px;
+  padding: 0 8px 18px;
+}
+
+.navigation {
+  padding-top: 14px;
+  gap: 2px;
+}
+
+.nav-item {
+  min-height: 36px;
+  padding: 0 10px;
+  gap: 9px;
+  border-radius: 5px;
+}
+
+.nav-icon {
+  width: 16px;
+}
+
+.sidebar-bottom {
+  padding-top: 8px;
+}
+
+.version {
+  padding: 14px 10px 0;
+}
+
+/* FERPEK Lens - denser infrastructure navigation */
+
+.sidebar {
+  width: 205px;
+  padding: 14px 10px 12px;
+}
+
+.main {
+  width: calc(100% - 205px);
+  margin-left: 205px;
+}
+
+.brand {
+  gap: 8px;
+  padding: 0 7px 14px;
+}
+
+.brand-name {
+  font-size: 13px;
+}
+
+.brand-subtitle {
+  margin-top: 2px;
+  font-size: 8px;
+}
+
+.navigation {
+  padding-top: 10px;
+  gap: 0;
+}
+
+.nav-item {
+  min-height: 32px;
+  padding: 0 9px;
+  gap: 8px;
+  border-radius: 4px;
+  font-size: 13px;
+}
+
+.nav-icon {
+  width: 14px;
+  font-size: 12px;
+}
+
+.nav-item.active {
+  box-shadow: inset 2px 0 var(--brand);
+}
+
+.sidebar-bottom {
+  padding-top: 4px;
+}
+
+.version {
+  padding: 10px 9px 0;
+  font-size: 9px;
+}
+
+/* Slightly denser application header */
+
+.topbar {
+  height: 68px;
+  padding: 0 28px;
+}
+
+.topbar h1 {
+  font-size: 18px;
+}
+
+.topbar p {
+  margin-top: 3px;
+}
+
+.content {
+  padding: 26px 30px 50px;
+}
+
+/* FERPEK Lens - balanced navigation density */
+
+.sidebar {
+  width: 218px;
+  padding: 17px 12px 14px;
+}
+
+.main {
+  width: calc(100% - 218px);
+  margin-left: 218px;
+}
+
+.brand {
+  gap: 9px;
+  padding: 0 8px 17px;
+}
+
+.brand-name {
+  font-size: 14px;
+}
+
+.brand-subtitle {
+  margin-top: 2px;
+  font-size: 8px;
+}
+
+.navigation {
+  padding-top: 12px;
+  gap: 2px;
+}
+
+.nav-item {
+  min-height: 36px;
+  padding: 0 10px;
+  gap: 9px;
+  border-radius: 5px;
+  font-size: 14px;
+}
+
+.nav-icon {
+  width: 16px;
+  font-size: 12px;
+}
+
+/* More restrained Cloudflare-like selected state */
+
+.nav-item.active {
+  background: var(--brand-soft);
+  color: var(--text-strong);
+  box-shadow: inset 2px 0 var(--brand);
+}
+
+.nav-item.active .nav-icon {
+  color: var(--brand);
+}
+
+.nav-item:hover:not(.active) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.sidebar-bottom {
+  padding-top: 6px;
+}
+
+.version {
+  padding: 12px 10px 0;
+  font-size: 9px;
+}
+
+/* Balanced header density */
+
+.topbar {
+  height: 72px;
+  padding: 0 30px;
+}
+
+.topbar h1 {
+  font-size: 19px;
+}
+
+.topbar p {
+  margin-top: 4px;
+}
+
+.content {
+  padding: 28px 32px 52px;
+}
+
+/* =========================================================
+   FERPEK Lens host detail refresh
+   ========================================================= */
+
+/* Fix host visibility in light mode */
+
+.system-row.large-row .system-info strong {
+  color: var(--text-strong);
+}
+
+.host-inline-meta,
+.host-inline-meta span {
+  color: var(--text-muted);
+}
+
+.host-meta-divider {
+  color: var(--text-dim);
+}
+
+/* Host identity */
+
+.host-detail {
+  gap: 18px;
+}
+
+.host-detail-header {
+  align-items: center;
+  gap: 32px;
+}
+
+.host-identity {
+  min-width: 0;
+}
+
+.host-title-line {
+  gap: 10px;
+}
+
+.host-title-line h2 {
+  color: var(--text-strong);
+  font-size: 1.55rem;
+  line-height: 1.15;
+}
+
+.host-detail-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 11px;
+}
+
+.host-meta-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 26px;
+  padding: 3px 9px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 0.76rem;
+  line-height: 1;
+}
+
+.host-status-pill.online {
+  border-color: rgba(67, 207, 161, 0.38);
+  color: #249f7b;
+}
+
+.host-status-pill.offline {
+  color: var(--text-muted);
+}
+
+/* Compact summary stats */
+
+.host-summary {
+  display: flex;
+  align-items: stretch;
+  gap: 10px;
+  margin-left: auto;
+}
+
+.host-summary-stat {
+  min-width: 116px;
+  padding: 8px 12px;
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 2px;
+}
+
+.host-summary-stat strong {
+  color: var(--text-strong);
+  font-size: 1.05rem;
+  line-height: 1.1;
+}
+
+.host-summary-stat span {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.055em;
+}
+
+/* Host tabs */
+
+.host-tabs {
+  gap: 18px;
+}
+
+.host-tab {
+  padding: 10px 2px 9px;
+  color: var(--text-muted);
+}
+
+.host-tab:hover {
+  color: var(--text);
+}
+
+.host-tab.selected {
+  color: var(--text-strong);
+  border-bottom-color: var(--brand);
+}
+
+/* Slightly denser overview */
+
+.host-overview-grid {
+  gap: 14px;
+}
+
+.host-property {
+  padding: 11px 0;
+}
+
+.host-property span {
+  color: var(--text-muted);
+}
+
+.host-property strong {
+  color: var(--text-strong);
+}
+
+/* Responsive */
+
+@media (max-width: 900px) {
+  .host-detail-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .host-summary {
+    margin-left: 0;
+  }
+
+  .host-summary-stat {
+    align-items: flex-start;
+    border-left: 0;
+    border-right: 1px solid var(--border);
+  }
+}
+
+/* =========================================================
+   FERPEK Lens - Host Logs / Findings coherence
+   ========================================================= */
+
+.host-log-toolbar {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 240px) 1fr auto;
+  align-items: end;
+  gap: 18px;
+  margin-bottom: 2px;
+}
+
+.host-log-toolbar .finding-filter-group {
+  gap: 6px;
+}
+
+.host-log-toolbar .live-indicator {
+  margin-left: 0;
+  padding-bottom: 9px;
+  justify-self: end;
+}
+
+.host-source-select {
+  min-width: 0;
+  width: 100%;
+  height: 38px;
+  padding: 0 12px;
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+.host-log-panel {
+  margin-top: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+/* Same empty-state treatment for Logs and Findings */
+
+.host-log-panel .empty-state,
+.host-detail > .panel .empty-state {
+  min-height: 62px;
+  display: flex;
+  align-items: center;
+  padding: 0 18px;
+  color: var(--text);
+}
+
+/* If empty-state is rendered without the usual panel wrapper */
+
+.host-detail .empty-state {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+
+/* Log rows */
+
+.host-log-row {
+  padding: 13px 16px;
+  border-bottom-color: var(--border-soft);
+}
+
+.host-log-row:hover {
+  background: var(--surface-hover);
+}
+
+.host-log-content strong,
+.host-log-content code {
+  color: var(--text-strong);
+}
+
+.host-log-content span,
+.host-log-row time {
+  color: var(--text-muted);
+}
+
+/* Slightly more compact filters */
+
+.host-log-toolbar .filter-button {
+  min-height: 34px;
+  padding: 0 11px;
+}
+
+/* Responsive */
+
+@media (max-width: 900px) {
+  .host-log-toolbar {
+    grid-template-columns: auto minmax(160px, 1fr);
+  }
+
+  .host-log-toolbar .live-indicator {
+    justify-self: start;
+  }
+}
+
+/* FERPEK Lens - stronger host online/offline state */
+
+.host-status-pill {
+  font-weight: 600;
+}
+
+.host-status-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 50%;
+}
+
+.host-status-pill.online {
+  border-color: rgba(38, 174, 132, 0.42);
+  background: rgba(38, 174, 132, 0.09);
+  color: #178565;
+}
+
+.host-status-pill.online .host-status-dot {
+  background: #28b98b;
+  box-shadow: 0 0 0 3px rgba(40, 185, 139, 0.12);
+}
+
+.host-status-pill.offline {
+  border-color: rgba(194, 76, 76, 0.34);
+  background: rgba(194, 76, 76, 0.07);
+  color: #b64c4c;
+}
+
+.host-status-pill.offline .host-status-dot {
+  background: #c85c5c;
+  box-shadow: 0 0 0 3px rgba(200, 92, 92, 0.10);
+}
+
+/* =========================================================
+   FERPEK Lens - Sources refinement
+   ========================================================= */
+
+.host-sources-config {
+  gap: 12px;
+}
+
+/* Explanation strip */
+
+.sources-explanation {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.sources-explanation p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
+.sources-explanation strong {
+  color: var(--text-strong);
+  font-weight: 600;
+}
+
+/* Source groups */
+
+.host-source-groups {
+  gap: 10px;
+}
+
+.host-source-group {
+  border-radius: 7px;
+}
+
+.host-source-group-header {
+  grid-template-columns: minmax(0, 1fr) 228px;
+  gap: 16px;
+  padding: 11px 14px 10px;
+  background: var(--surface);
+}
+
+.host-source-group-header h3 {
+  font-size: 0.88rem;
+  color: var(--text-strong);
+}
+
+.host-source-group-header p {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+}
+
+/* Column labels */
+
+.host-source-column-labels {
+  grid-template-columns: 100px 112px;
+  gap: 16px;
+  color: var(--text-muted);
+  font-size: 0.63rem;
+  letter-spacing: 0.065em;
+}
+
+/* Source rows */
+
+.host-source-config-row {
+  grid-template-columns: minmax(0, 1fr) 100px 112px;
+  gap: 16px;
+  min-height: 58px;
+  padding: 9px 14px;
+  border-bottom-color: var(--border-soft);
+}
+
+.host-source-config-row:hover {
+  background: var(--surface-hover);
+}
+
+.source-description {
+  min-width: 0;
+}
+
+.source-description > div {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.source-description strong {
+  color: var(--text-strong);
+  font-size: 0.84rem;
+  line-height: 1.2;
+}
+
+.source-description > span:not(.source-conflict-warning) {
+  margin-top: 3px;
+  color: var(--text-muted);
+  font-size: 0.72rem;
+  line-height: 1.25;
+}
+
+/* Badges */
+
+.source-role,
+.source-badge {
+  min-height: 18px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.source-role.preferred {
+  border-color: rgba(196, 106, 54, 0.38);
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+.source-role.alternative {
+  color: var(--text-muted);
+}
+
+/* Conflict warning */
+
+.source-conflict-warning {
+  margin-top: 5px;
+  color: #c28a2e;
+  font-size: 0.7rem;
+}
+
+/* Smaller infrastructure toggles */
+
+.host-source-config-row .toggle {
+  justify-self: start;
+}
+
+.host-source-config-row .toggle-track {
+  width: 34px;
+  height: 18px;
+}
+
+.host-source-config-row .toggle-knob {
+  width: 12px;
+  height: 12px;
+}
+
+/* Save bar */
+
+.host-source-savebar {
+  min-height: 36px;
+  padding-top: 2px;
+}
+
+.host-source-savebar .primary-button,
+.host-source-savebar .secondary-button {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+/* Responsive */
+
+@media (max-width: 850px) {
+  .sources-explanation {
+    grid-template-columns: 1fr;
+  }
+
+  .host-source-group-header {
+    grid-template-columns: 1fr;
+  }
+
+  .host-source-column-labels {
+    display: none;
+  }
+
+  .host-source-config-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+}
+
+/* =========================================================
+   FERPEK Lens - Sources hierarchy + contextual help
+   ========================================================= */
+
+.host-source-groups {
+  gap: 12px;
+}
+
+.host-source-group {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.host-source-group-header {
+  grid-template-columns: minmax(0, 1fr) 244px;
+  gap: 18px;
+  align-items: center;
+  padding: 13px 16px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-hover);
+}
+
+.host-source-group-header h3 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 0.92rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.host-source-group-header p {
+  margin: 4px 0 0;
+  color: var(--text-muted);
+  font-size: 0.74rem;
+  line-height: 1.35;
+}
+
+.host-source-column-labels {
+  display: grid;
+  grid-template-columns: 104px 124px;
+  gap: 16px;
+  align-items: center;
+}
+
+.source-column-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.065em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.info-dot {
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: help;
+  font: inherit;
+  font-size: 0.62rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.info-dot:hover,
+.info-dot:focus-visible {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+.host-source-config-row {
+  grid-template-columns: minmax(0, 1fr) 104px 124px;
+  gap: 16px;
+  min-height: 56px;
+  padding: 9px 16px;
+}
+
+.source-description strong {
+  color: var(--text-strong);
+  font-size: 0.84rem;
+}
+
+.source-description > span:not(.source-conflict-warning) {
+  color: var(--text-muted);
+  font-size: 0.72rem;
+}
+
+@media (max-width: 850px) {
+  .host-source-group-header {
+    grid-template-columns: 1fr;
+  }
+
+  .host-source-column-labels {
+    display: none;
+  }
+
+  .host-source-config-row {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+}
+
+/* =========================================================
+   FERPEK Lens - tooltip positioning fixes
+   ========================================================= */
+
+/* Topbar controls need their tooltip below the button. */
+
+.tooltip.tooltip-bottom::before {
+  top: calc(100% + 11px);
+  bottom: auto;
+}
+
+.tooltip.tooltip-bottom::after {
+  top: calc(100% + 6px);
+  bottom: auto;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+}
+
+/* The topbar itself must not clip floating UI. */
+
+.topbar {
+  overflow: visible;
+  position: relative;
+  z-index: 20;
+}
+
+.topbar-actions {
+  position: relative;
+  z-index: 21;
+}
+
+/* Old Sources help control is no longer used. */
+
+.info-dot {
+  display: none;
+}
+
+/* =========================================================
+   FERPEK Lens - global floating tooltip
+   ========================================================= */
+
+/*
+ * Tooltips are rendered once at application level.
+ * Disable the old pseudo-element implementation so cards,
+ * modals and overflow containers can never clip them.
+ */
+
+.tooltip::before,
+.tooltip::after {
+  display: none !important;
+}
+
+.global-tooltip {
+  position: fixed;
+  z-index: 10000;
+  max-width: 260px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--text-strong);
+  color: var(--bg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  font-size: 0.72rem;
+  font-weight: 500;
+  line-height: 1.35;
+  white-space: normal;
+  pointer-events: none;
+}
+
+.global-tooltip.top {
+  transform: translate(-50%, -100%);
+}
+
+.global-tooltip.bottom {
+  transform: translate(-50%, 0);
+}
+
+.global-tooltip::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  background: var(--text-strong);
+  transform: translateX(-50%) rotate(45deg);
+}
+
+.global-tooltip.top::after {
+  bottom: -5px;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.global-tooltip.bottom::after {
+  top: -5px;
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+}
+
+/* FERPEK Lens - tooltip sizing fix */
+
+.global-tooltip {
+  width: max-content;
+  max-width: 280px;
+  white-space: nowrap;
+}
+
+/* FERPEK Lens - viewport-aware tooltip arrow */
+
+.global-tooltip::after {
+  left: calc(50% + var(--tooltip-arrow-x, 0px));
+}
+
+/* =========================================================
+   FERPEK Lens - compact Settings layout
+   ========================================================= */
+
+.settings-page {
+  gap: 14px;
+}
+
+.settings-section,
+.setting-card {
+  padding: 16px 18px;
+  border-radius: 7px;
+}
+
+.settings-section-header,
+.setting-card-header {
+  margin-bottom: 12px;
+}
+
+.settings-section-header h2,
+.setting-card-header h2 {
+  margin: 0;
+  font-size: 0.95rem;
+}
+
+.settings-section-header p,
+.setting-card-header p {
+  margin-top: 3px;
+  font-size: 0.74rem;
+}
+
+/* Core settings rows */
+
+.core-setting-row {
+  min-height: 58px;
+  padding: 10px 0;
+}
+
+.core-setting-row + .core-setting-row {
+  border-top: 1px solid var(--border-soft);
+}
+
+.core-setting-row h3 {
+  margin: 0;
+  font-size: 0.88rem;
+}
+
+.core-setting-row p {
+  margin-top: 3px;
+  font-size: 0.74rem;
+}
+
+.core-setting-row .secondary-button {
+  min-height: 34px;
+  padding: 0 12px;
+}
+
+/* Pack management */
+
+.pack-management-grid {
+  gap: 18px;
+}
+
+.pack-setting-row {
+  min-height: 58px;
+  padding: 10px 0;
+}
+
+.pack-setting-row strong {
+  font-size: 0.86rem;
+}
+
+.pack-setting-row span {
+  margin-top: 3px;
+  font-size: 0.72rem;
+}
+
+.pack-management-actions {
+  padding-top: 10px;
+}
+
+/* Retention */
+
+.retention-grid {
+  gap: 8px;
+}
+
+.retention-field {
+  min-height: 48px;
+}
+
+.retention-field > span {
+  font-size: 0.82rem;
+}
+
+.retention-input-row {
+  gap: 9px;
+}
+
+.retention-input-row input {
+  width: 88px;
+  height: 36px;
+  padding: 0 10px;
+}
+
+.retention-actions {
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+/* General spacing */
+
+.settings-page .primary-button,
+.settings-page .secondary-button {
+  min-height: 34px;
 }

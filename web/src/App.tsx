@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import {
   BrowserRouter,
   NavLink,
@@ -15,6 +15,160 @@ type Status = 'healthy' | 'warning' | 'critical' | 'unknown'
 function StatusDiamond({ status }: { status: Status }) {
   return <span className={`status-diamond ${status}`} />
 }
+
+function GlobalTooltip() {
+  const tooltipRef = useRef<HTMLDivElement>(null)
+
+  const [tooltip, setTooltip] = useState<{
+    text: string
+    targetX: number
+    y: number
+    placement: 'top' | 'bottom'
+  } | null>(null)
+
+  const [position, setPosition] = useState<{
+    x: number
+    arrowX: number
+  } | null>(null)
+
+  useEffect(() => {
+    function showTooltip(target: EventTarget | null) {
+      if (!(target instanceof Element)) {
+        return
+      }
+
+      const element = target.closest<HTMLElement>(
+        '[data-tooltip]',
+      )
+
+      if (!element) {
+        return
+      }
+
+      const text = element.dataset.tooltip
+
+      if (!text) {
+        return
+      }
+
+      const rect = element.getBoundingClientRect()
+      const placement =
+        rect.top < 70 ? 'bottom' : 'top'
+
+      setPosition(null)
+
+      setTooltip({
+        text,
+        targetX: rect.left + rect.width / 2,
+        y:
+          placement === 'top'
+            ? rect.top - 9
+            : rect.bottom + 9,
+        placement,
+      })
+    }
+
+    function handleMouseOver(event: MouseEvent) {
+      showTooltip(event.target)
+    }
+
+    function handleMouseOut(event: MouseEvent) {
+      if (!(event.target instanceof Element)) {
+        return
+      }
+
+      const element = event.target.closest('[data-tooltip]')
+
+      if (!element) {
+        return
+      }
+
+      const related = event.relatedTarget
+
+      if (
+        related instanceof Node &&
+        element.contains(related)
+      ) {
+        return
+      }
+
+      setTooltip(null)
+      setPosition(null)
+    }
+
+    function handleFocusIn(event: FocusEvent) {
+      showTooltip(event.target)
+    }
+
+    function hideTooltip() {
+      setTooltip(null)
+      setPosition(null)
+    }
+
+    document.addEventListener('mouseover', handleMouseOver)
+    document.addEventListener('mouseout', handleMouseOut)
+    document.addEventListener('focusin', handleFocusIn)
+    document.addEventListener('focusout', hideTooltip)
+
+    window.addEventListener('scroll', hideTooltip, true)
+    window.addEventListener('resize', hideTooltip)
+
+    return () => {
+      document.removeEventListener('mouseover', handleMouseOver)
+      document.removeEventListener('mouseout', handleMouseOut)
+      document.removeEventListener('focusin', handleFocusIn)
+      document.removeEventListener('focusout', hideTooltip)
+
+      window.removeEventListener('scroll', hideTooltip, true)
+      window.removeEventListener('resize', hideTooltip)
+    }
+  }, [])
+
+  useLayoutEffect(() => {
+    if (!tooltip || !tooltipRef.current) {
+      return
+    }
+
+    const width = tooltipRef.current.offsetWidth
+    const padding = 12
+
+    const minX = padding + width / 2
+    const maxX = window.innerWidth - padding - width / 2
+
+    const x = Math.min(
+      Math.max(tooltip.targetX, minX),
+      maxX,
+    )
+
+    setPosition({
+      x,
+      arrowX: tooltip.targetX - x,
+    })
+  }, [tooltip])
+
+  if (!tooltip) {
+    return null
+  }
+
+  return (
+    <div
+      ref={tooltipRef}
+      className={`global-tooltip ${tooltip.placement}`}
+      style={{
+        left: position?.x ?? tooltip.targetX,
+        top: tooltip.y,
+        visibility: position ? 'visible' : 'hidden',
+        '--tooltip-arrow-x': `${
+          position?.arrowX ?? 0
+        }px`,
+      } as Record<string, string | number>}
+      role="tooltip"
+    >
+      {tooltip.text}
+    </div>
+  )
+}
+
 
 type ApiFinding = {
   id: number
@@ -238,7 +392,7 @@ function Sidebar() {
 
         <div>
           <div className="brand-name">FERPEK</div>
-          <div className="brand-subtitle">Infrastructure</div>
+          <div className="brand-subtitle">LENS</div>
         </div>
       </div>
 
@@ -1848,25 +2002,52 @@ function HostDetail() {
       </button>
 
       <div className="host-detail-header">
-        <div>
+        <div className="host-identity">
           <div className="host-title-line">
             <StatusDiamond status={online ? 'healthy' : 'unknown'} />
             <h2>{agent.hostname}</h2>
           </div>
 
-          <p>
-            {agent.os_name || 'Operating system unknown'}
-            {agent.agent_version
-              ? ` · Agent ${agent.agent_version}`
-              : ''}
-            {' · '}
-            {online ? 'Online' : 'Offline'}
-          </p>
+          <div className="host-detail-meta">
+            <span className="host-meta-pill">
+              {agent.os_name || 'Operating system unknown'}
+            </span>
+
+            {agent.machine_type && (
+              <span className="host-meta-pill">
+                {agent.machine_type
+                  .replace('virtual:', '')
+                  .toUpperCase()}
+              </span>
+            )}
+
+            {agent.agent_version && (
+              <span className="host-meta-pill">
+                Agent {agent.agent_version}
+              </span>
+            )}
+
+            <span
+              className={`host-meta-pill host-status-pill ${
+                online ? 'online' : 'offline'
+              }`}
+            >
+              <span className="host-status-dot" />
+              {online ? 'Online' : 'Offline'}
+            </span>
+          </div>
         </div>
 
         <div className="host-summary">
-          <span>{openFindings.length} open findings</span>
-          <span>{hostSources.length} monitored sources</span>
+          <div className="host-summary-stat">
+            <strong>{openFindings.length}</strong>
+            <span>Open findings</span>
+          </div>
+
+          <div className="host-summary-stat">
+            <strong>{hostSources.length}</strong>
+            <span>Monitored sources</span>
+          </div>
         </div>
       </div>
 
@@ -2110,18 +2291,6 @@ function HostDetail() {
 
       {activeTab === 'sources' && (
         <div className="host-sources-config">
-          <div className="sources-explanation">
-            <p>
-              <strong>Monitor</strong> allows FERPEK to analyse
-              this source and generate relevant events and findings.
-            </p>
-
-            <p>
-              <strong>Log Explorer</strong> also stores raw events
-              centrally for inspection.
-            </p>
-          </div>
-
           <div className="host-source-groups">
             {sourceGroups.map((group) => {
               const groupSources = sourceDrafts.filter(
@@ -4537,6 +4706,17 @@ function Settings() {
 
 function Layout() {
   const location = useLocation()
+
+  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
+    return localStorage.getItem('ferpek-theme') === 'light'
+      ? 'light'
+      : 'dark'
+  })
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme
+    localStorage.setItem('ferpek-theme', theme)
+  }, [theme])
   const info = location.pathname.startsWith('/systems/')
     ? {
         title: 'Host',
@@ -4546,6 +4726,7 @@ function Layout() {
 
   return (
     <div className="app">
+      <GlobalTooltip />
       <Sidebar />
 
       <main className="main">
@@ -4555,9 +4736,28 @@ function Layout() {
             <p>{info.subtitle}</p>
           </div>
 
-          <div className="server-state">
-            <StatusDiamond status="healthy" />
-            <span>Server operational</span>
+          <div className="topbar-actions">
+            <button
+              className="theme-toggle tooltip"
+              data-tooltip={
+                theme === 'dark'
+                  ? 'Switch to light mode'
+                  : 'Switch to dark mode'
+              }
+              aria-label={
+                theme === 'dark'
+                  ? 'Switch to light mode'
+                  : 'Switch to dark mode'
+              }
+              onClick={() =>
+                setTheme((current) =>
+                  current === 'dark' ? 'light' : 'dark'
+                )
+              }
+            >
+              {theme === 'dark' ? '☀' : '◐'}
+            </button>
+
           </div>
         </header>
 
