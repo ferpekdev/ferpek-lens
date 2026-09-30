@@ -4588,3 +4588,48 @@ section {
 .settings-page .secondary-button {
   min-height: 34px;
 }
+
+/* =========================================================
+   FERPEK Lens - wide viewport layout
+   ========================================================= */
+
+.content {
+  width: 100%;
+  max-width: none;
+  padding: 28px 32px 52px;
+}
+
+/* Prevent operational pages from feeling cramped on large screens */
+
+.stats-grid,
+.overview-grid,
+.hosts-list,
+.findings-list,
+.packs-page,
+.settings-page,
+.host-detail {
+  width: 100%;
+}
+
+/* Keep very wide screens readable without wasting space */
+
+@media (min-width: 2200px) {
+  .content {
+    max-width: 2100px;
+    margin: 0 auto;
+  }
+}
+
+/* FERPEK Lens - compact secondary actions */
+
+.compact-button {
+  min-height: 30px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 5px;
+  font-size: 0.75rem;
+  text-decoration: none;
+  white-space: nowrap;
+}

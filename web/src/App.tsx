@@ -600,8 +600,11 @@ function Overview() {
             <p>Open findings ordered by severity</p>
           </div>
 
-          <NavLink className="text-button" to="/findings">
-            View all findings →
+          <NavLink
+            className="secondary-button compact-button"
+            to="/findings"
+          >
+            View findings
           </NavLink>
         </div>
 
