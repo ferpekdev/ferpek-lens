@@ -6373,8 +6373,12 @@ function AccessPage({
 
 function Settings({
   currentUser,
+  theme,
+  onThemeChange,
 }: {
   currentUser: CurrentUser
+  theme: ThemePreference
+  onThemeChange: (theme: ThemePreference) => void
 }) {
   const [
     allowCommunityPacks,
@@ -6576,91 +6580,170 @@ function Settings({
   }
 
   return (
-    <section>
-      <div className="section-heading">
-        <div>
-          <h2>FERPEK settings</h2>
-          <p>Configuration for this FERPEK instance</p>
-        </div>
-      </div>
+    <section className="settings-page">
+      <div className="settings-content">
+        <div className="settings-sections">
 
-      <div className="settings-sections">
-        <div className="panel core-settings-panel">
+          <div className="settings-group">
+            <div className="settings-group-heading">
+              <h2>General</h2>
+              <p>General FERPEK configuration and appearance.</p>
+            </div>
+
+            <div className="panel settings-list-panel">
+              <div className="settings-list-row">
+                <div>
+                  <h3>Appearance</h3>
+                  <p>Choose how FERPEK looks on this browser.</p>
+                </div>
+
+                <div className="theme-segmented">
+                  {(['light', 'dark', 'system'] as ThemePreference[]).map(
+                    (option) => (
+                      <button
+                        type="button"
+                        key={option}
+                        className={
+                          theme === option
+                            ? 'active'
+                            : ''
+                        }
+                        onClick={() =>
+                          onThemeChange(option)
+                        }
+                      >
+                        {option.charAt(0).toUpperCase() +
+                          option.slice(1)}
+                      </button>
+                    ),
+                  )}
+                </div>
+              </div>
+
+              {hasPermission(currentUser, 'settings.view') && (
+                <>
+                  <div className="settings-list-row settings-navigation-row">
+                    <div>
+                      <h3>Server</h3>
+                      <p>
+                        Server identity, URL and connectivity settings.
+                      </p>
+                    </div>
+
+                    {hasPermission(
+                      currentUser,
+                      'settings.manage',
+                    ) && (
+                      <span className="settings-row-arrow">
+                        ›
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="settings-list-row settings-navigation-row">
+                    <div>
+                      <h3>Agents</h3>
+                      <p>
+                        Enrollment and agent configuration.
+                      </p>
+                    </div>
+
+                    {hasPermission(
+                      currentUser,
+                      'settings.manage',
+                    ) && (
+                      <span className="settings-row-arrow">
+                        ›
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="settings-list-row settings-navigation-row">
+                    <div>
+                      <h3>Detection</h3>
+                      <p>
+                        Patterns and finding behaviour.
+                      </p>
+                    </div>
+
+                    {hasPermission(
+                      currentUser,
+                      'settings.manage',
+                    ) && (
+                      <span className="settings-row-arrow">
+                        ›
+                      </span>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+
           {(hasPermission(currentUser, 'users.view') ||
-            hasPermission(currentUser, 'groups.view')) && (
-            <div className="core-setting-row">
-              <div>
-                <h3>Access</h3>
+            hasPermission(currentUser, 'groups.view') ||
+            hasPermission(
+              currentUser,
+              'settings.auth_manage',
+            )) && (
+            <div className="settings-group">
+              <div className="settings-group-heading">
+                <h2>Access &amp; authentication</h2>
                 <p>
-                  Users, groups and permissions.
+                  Users, permissions and authentication providers.
                 </p>
               </div>
 
-              <NavLink
-                to="/settings/access"
-                className="secondary-button"
-              >
-                Manage
-              </NavLink>
+              <div className="panel settings-list-panel">
+                {(hasPermission(currentUser, 'users.view') ||
+                  hasPermission(currentUser, 'groups.view')) && (
+                  <NavLink
+                    to="/settings/access"
+                    className="settings-list-row settings-navigation-row"
+                  >
+                    <div>
+                      <h3>Users &amp; permissions</h3>
+                      <p>
+                        Manage users, groups and access permissions.
+                      </p>
+                    </div>
+
+                    <span className="settings-row-arrow">
+                      ›
+                    </span>
+                  </NavLink>
+                )}
+
+                {hasPermission(
+                  currentUser,
+                  'settings.auth_manage',
+                ) && (
+                  <div className="settings-list-row settings-navigation-row">
+                    <div>
+                      <h3>Authentication</h3>
+                      <p>
+                        Configure local, LDAP and Active Directory login.
+                      </p>
+                    </div>
+
+                    <span className="settings-row-arrow">
+                      ›
+                    </span>
+                  </div>
+                )}
+              </div>
             </div>
           )}
 
-          <div className="core-setting-row">
-            <div>
-              <h3>Server</h3>
-              <p>Server identity, URL and connectivity settings.</p>
-            </div>
-
-            {hasPermission(
-              currentUser,
-              'settings.manage',
-            ) && (
-              <button className="secondary-button">
-                Configure
-              </button>
-            )}
-          </div>
-
-          <div className="core-setting-row">
-            <div>
-              <h3>Agents</h3>
-              <p>Enrollment and agent configuration.</p>
-            </div>
-
-            {hasPermission(
-              currentUser,
-              'settings.manage',
-            ) && (
-              <button className="secondary-button">
-                Configure
-              </button>
-            )}
-          </div>
-
-          <div className="core-setting-row">
-            <div>
-              <h3>Detection</h3>
-              <p>Patterns and finding behaviour.</p>
-            </div>
-
-            {hasPermission(
-              currentUser,
-              'settings.manage',
-            ) && (
-              <button className="secondary-button">
-                Configure
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="panel setting-card pack-management-card">
-          <div>
-            <h3>Pack management</h3>
+        <div className="settings-group">
+          <div className="settings-group-heading">
+            <h2>Packs</h2>
             <p>
               Control which pack sources this FERPEK instance may use.
             </p>
           </div>
+
+          <div className="panel setting-card pack-management-card">
 
           {packSettingsLoading ? (
             <p>Loading pack settings...</p>
@@ -6769,13 +6852,18 @@ function Settings({
               </div>
             </>
           )}
+          </div>
         </div>
 
-        <div className="panel setting-card retention-card">
-          <h3>Retention</h3>
-          <p>
-            Control how long FERPEK keeps historical data.
-          </p>
+        <div className="settings-group">
+          <div className="settings-group-heading">
+            <h2>Data retention</h2>
+            <p>
+              Control how long FERPEK keeps historical data.
+            </p>
+          </div>
+
+          <div className="panel setting-card retention-card">
 
           {retentionLoading ? (
             <p>Loading retention settings...</p>
@@ -6906,7 +6994,9 @@ function Settings({
               </div>
             </>
           )}
+          </div>
         </div>
+      </div>
       </div>
     </section>
   )
@@ -6942,6 +7032,12 @@ function RequirePermission({
 }
 
 
+type ThemePreference =
+  | 'system'
+  | 'light'
+  | 'dark'
+
+
 function Layout({
   currentUser,
   onLogout,
@@ -6951,15 +7047,47 @@ function Layout({
 }) {
   const location = useLocation()
 
-  const [theme, setTheme] = useState<'dark' | 'light'>(() => {
-    return localStorage.getItem('ferpek-theme') === 'light'
-      ? 'light'
-      : 'dark'
+  const [theme, setTheme] = useState<ThemePreference>(() => {
+    const stored = localStorage.getItem('ferpek-theme')
+
+    if (
+      stored === 'light' ||
+      stored === 'dark' ||
+      stored === 'system'
+    ) {
+      return stored
+    }
+
+    return 'system'
   })
 
   useEffect(() => {
-    document.documentElement.dataset.theme = theme
+    const media = window.matchMedia(
+      '(prefers-color-scheme: dark)',
+    )
+
+    function applyTheme() {
+      const effectiveTheme =
+        theme === 'system'
+          ? media.matches
+            ? 'dark'
+            : 'light'
+          : theme
+
+      document.documentElement.dataset.theme =
+        effectiveTheme
+    }
+
+    applyTheme()
     localStorage.setItem('ferpek-theme', theme)
+
+    if (theme === 'system') {
+      media.addEventListener('change', applyTheme)
+
+      return () => {
+        media.removeEventListener('change', applyTheme)
+      }
+    }
   }, [theme])
   const info = location.pathname.startsWith('/systems/')
     ? {
@@ -6983,29 +7111,7 @@ function Layout({
             <p>{info.subtitle}</p>
           </div>
 
-          <div className="topbar-actions">
-            <button
-              className="theme-toggle tooltip"
-              data-tooltip={
-                theme === 'dark'
-                  ? 'Switch to light mode'
-                  : 'Switch to dark mode'
-              }
-              aria-label={
-                theme === 'dark'
-                  ? 'Switch to light mode'
-                  : 'Switch to dark mode'
-              }
-              onClick={() =>
-                setTheme((current) =>
-                  current === 'dark' ? 'light' : 'dark'
-                )
-              }
-            >
-              {theme === 'dark' ? '☀' : '◐'}
-            </button>
-
-          </div>
+          <div className="topbar-actions" />
         </header>
 
         <div className="content">
@@ -7077,7 +7183,11 @@ function Layout({
                 hasPermission(currentUser, 'settings.view') ||
                 hasPermission(currentUser, 'users.view') ||
                 hasPermission(currentUser, 'groups.view') ? (
-                  <Settings currentUser={currentUser} />
+                  <Settings
+                    currentUser={currentUser}
+                    theme={theme}
+                    onThemeChange={setTheme}
+                  />
                 ) : (
                   <AccessDenied />
                 )

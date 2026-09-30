@@ -5797,3 +5797,296 @@ section {
   color: var(--text);
   font-size: 11px;
 }
+
+/* ---------------------------------------------------------
+   Settings — compact appliance-style layout
+   --------------------------------------------------------- */
+
+.settings-page {
+  width: 100%;
+}
+
+.settings-content {
+  width: 100%;
+  max-width: 1000px;
+}
+
+.settings-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.settings-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-group-heading {
+  padding: 0 2px;
+}
+
+.settings-group-heading h2 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.settings-group-heading p {
+  margin: 3px 0 0;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.settings-list-panel {
+  overflow: hidden;
+  padding: 0;
+}
+
+.settings-list-row {
+  min-height: 58px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.settings-list-row:last-child {
+  border-bottom: 0;
+}
+
+.settings-list-row > div:first-child {
+  min-width: 0;
+}
+
+.settings-list-row h3 {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.settings-list-row p {
+  margin: 3px 0 0;
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.settings-navigation-row {
+  cursor: pointer;
+}
+
+.settings-navigation-row:hover {
+  background: var(--surface-hover);
+}
+
+.settings-row-arrow {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  font-size: 18px;
+  line-height: 1;
+}
+
+.theme-segmented {
+  flex: 0 0 auto;
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-hover);
+}
+
+.theme-segmented button {
+  min-width: 62px;
+  height: 28px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-dim);
+  font: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.theme-segmented button:hover {
+  color: var(--text);
+}
+
+.theme-segmented button.active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 0 0 1px var(--border);
+}
+
+/* Existing settings cards now use the same compact width/layout */
+.settings-content .setting-card {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Pack management should no longer split into distant columns */
+.settings-content .pack-management-card {
+  display: block;
+  padding: 14px;
+}
+
+.settings-content .pack-management-card > div:first-child {
+  margin-bottom: 10px;
+}
+
+.settings-content .pack-setting-row {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+/* Retention stays compact and predictable */
+.settings-content .retention-card {
+  padding: 14px;
+}
+
+.settings-content .retention-field {
+  max-width: 520px;
+}
+
+/* Remove any old grid behaviour from the settings container */
+.settings-content .settings-sections {
+  grid-template-columns: none;
+}
+
+/* ---------------------------------------------------------
+   Settings — final compact Packs / Data layout
+   --------------------------------------------------------- */
+
+.settings-content .pack-management-card,
+.settings-content .retention-card {
+  display: block;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* Packs */
+.settings-content .pack-setting-row {
+  min-height: 58px;
+  width: 100%;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  margin: 0;
+  padding: 10px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-content .pack-setting-row > div {
+  min-width: 0;
+}
+
+.settings-content .pack-setting-row strong {
+  display: block;
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.settings-content .pack-setting-row span:not(.setting-switch-track) {
+  font-size: 10px;
+}
+
+.settings-content .pack-setting-row > div > span {
+  display: block;
+  margin-top: 3px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
+.settings-content .pack-setting-fixed {
+  flex: 0 0 auto;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.settings-content .pack-management-actions,
+.settings-content .retention-actions {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 0;
+  padding: 8px 14px;
+  border: 0;
+  border-top: 0;
+}
+
+/* Data retention */
+.settings-content .retention-field {
+  min-height: 58px;
+  max-width: none;
+  width: 100%;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 24px;
+  margin: 0;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-content .retention-field label {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.settings-content .retention-field > span {
+  color: var(--text-dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.settings-content .retention-input-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.settings-content .retention-input-row input {
+  width: 76px;
+  min-height: 30px;
+  box-sizing: border-box;
+}
+
+.settings-content .retention-input-row span {
+  min-width: 26px;
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.settings-content .retention-actions {
+  border-top: 0;
+}
+
+/* Keep action buttons visually aligned with the compact rows */
+.settings-content .pack-management-actions .secondary-button,
+.settings-content .retention-actions .secondary-button {
+  min-height: 32px;
+}
+
+/* Settings — centered compact content */
+.settings-content {
+  width: 100%;
+  max-width: 1050px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
