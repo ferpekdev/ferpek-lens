@@ -338,11 +338,19 @@ const pageInfo: Record<string, { title: string; subtitle: string }> = {
   },
   '/settings': {
     title: 'Settings',
-    subtitle: 'Configure your FERPEK instance',
+    subtitle: 'Configure your FERPEK Lens instance',
   },
   '/settings/access': {
-    title: 'Access',
-    subtitle: 'Users, groups and permissions',
+    title: 'Users & permissions',
+    subtitle: 'Manage users, groups and access permissions',
+  },
+  '/settings/authentication': {
+    title: 'Authentication',
+    subtitle: 'Configure login providers',
+  },
+  '/settings/authentication/ldap': {
+    title: 'LDAP',
+    subtitle: 'Configure LDAP authentication',
   },
 }
 
@@ -570,14 +578,24 @@ function Sidebar({
 
   return (
     <aside className="sidebar">
-      <div className="brand">
-        <div className="brand-mark">◇</div>
+      <a
+        className="brand"
+        href="https://ferpek.com"
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="Open ferpek.com"
+      >
+        <img
+          className="brand-logo"
+          src="/ferpek_original_sem_nome_laranja_transparente.svg"
+          alt=""
+        />
 
-        <div>
-          <div className="brand-name">FERPEK</div>
-          <div className="brand-subtitle">LENS</div>
+        <div className="brand-wordmark">
+          <span className="brand-name">FERPEK</span>
+          <span className="brand-product">Lens</span>
         </div>
-      </div>
+      </a>
 
       <nav className="navigation">
         <NavLink
@@ -587,8 +605,7 @@ function Sidebar({
             `nav-item ${isActive ? 'active' : ''}`
           }
         >
-          <span className="nav-icon">⌂</span>
-          Overview
+                    Overview
         </NavLink>
 
         {canViewHosts && (
@@ -598,8 +615,7 @@ function Sidebar({
               `nav-item ${isActive ? 'active' : ''}`
             }
           >
-            <span className="nav-icon">▣</span>
-            Hosts
+                        Hosts
 
             {hostCount > 0 && (
               <span className="nav-count host-nav-count">
@@ -616,8 +632,7 @@ function Sidebar({
               `nav-item ${isActive ? 'active' : ''}`
             }
           >
-            <span className="nav-icon">◇</span>
-            Findings
+                        Findings
 
             {findingCount > 0 && (
               <span className="nav-count danger">
@@ -634,8 +649,7 @@ function Sidebar({
               `nav-item ${isActive ? 'active' : ''}`
             }
           >
-            <span className="nav-icon">≡</span>
-            Activity
+                        Activity
           </NavLink>
         )}
 
@@ -646,8 +660,7 @@ function Sidebar({
               `nav-item ${isActive ? 'active' : ''}`
             }
           >
-            <span className="nav-icon">◇</span>
-            Packs
+                        Packs
 
             {packCount > 0 && (
               <span className="nav-count host-nav-count">
@@ -961,7 +974,7 @@ function Overview({
           <div className="panel">
             <div className="empty-state">
               Your account has limited access to this
-              FERPEK instance.
+              FERPEK Lens instance.
             </div>
           </div>
         </section>
@@ -4165,7 +4178,7 @@ function Packs({
           </h2>
           <p>
             Detection and interpretation packs installed
-            on this FERPEK instance.
+            on this FERPEK Lens instance.
           </p>
         </div>
 
@@ -4454,7 +4467,7 @@ function Packs({
 
               <p>
                 This will permanently remove {deletePack.name}
-                from this FERPEK instance.
+                from this FERPEK Lens instance.
               </p>
 
               <p className="pack-edit-validation">
@@ -4639,7 +4652,7 @@ function Packs({
               <div>
                 <h2>Edit {editPack.name}</h2>
                 <p>
-                  v{editPack.version} · Changes are local to this FERPEK instance
+                  v{editPack.version} · Changes are local to this FERPEK Lens instance
                 </p>
               </div>
 
@@ -5176,7 +5189,10 @@ function AccessPage({
       if (isEditing) {
         payload.enabled = userEnabled
 
-        if (userPassword.length > 0) {
+        if (
+          editingUser?.auth_type === 'local' &&
+          userPassword.length > 0
+        ) {
           payload.password = userPassword
         }
       } else {
@@ -5414,7 +5430,7 @@ function AccessPage({
 
 
   return (
-    <section>
+    <section className="access-page">
       <NavLink
         to="/settings"
         className="back-link"
@@ -5716,6 +5732,7 @@ function AccessPage({
                   minLength={1}
                   maxLength={128}
                   required
+                  disabled={editingUser?.auth_type === 'ldap'}
                   onChange={(event) =>
                     setGroupName(event.target.value)
                   }
@@ -6036,6 +6053,7 @@ function AccessPage({
                   type="text"
                   value={userDisplayName}
                   maxLength={128}
+                  disabled={editingUser?.auth_type === 'ldap'}
                   onChange={(event) =>
                     setUserDisplayName(
                       event.target.value,
@@ -6051,6 +6069,7 @@ function AccessPage({
                   type="email"
                   value={userEmail}
                   maxLength={254}
+                  disabled={editingUser?.auth_type === 'ldap'}
                   onChange={(event) =>
                     setUserEmail(
                       event.target.value,
@@ -6059,32 +6078,48 @@ function AccessPage({
                 />
               </label>
 
-              <label>
-                <span>
-                  {editingUser
-                    ? 'New password'
-                    : 'Password'}
-                </span>
+              {editingUser?.auth_type === 'ldap' ? (
+                <div className="access-form-section">
+                  <span className="access-form-label">
+                    Authentication
+                  </span>
 
-                <input
-                  type="password"
-                  value={userPassword}
-                  minLength={12}
-                  maxLength={256}
-                  required={!editingUser}
-                  autoComplete="new-password"
-                  placeholder={
-                    editingUser
-                      ? 'Leave blank to keep current password'
-                      : ''
-                  }
-                  onChange={(event) =>
-                    setUserPassword(
-                      event.target.value,
-                    )
-                  }
-                />
-              </label>
+                  <div className="access-auth-provider">
+                    <strong>LDAP</strong>
+                    <span>
+                      Identity and password are managed by the
+                      directory.
+                    </span>
+                  </div>
+                </div>
+              ) : (
+                <label>
+                  <span>
+                    {editingUser
+                      ? 'New password'
+                      : 'Password'}
+                  </span>
+
+                  <input
+                    type="password"
+                    value={userPassword}
+                    minLength={12}
+                    maxLength={256}
+                    required={!editingUser}
+                    autoComplete="new-password"
+                    placeholder={
+                      editingUser
+                        ? 'Leave blank to keep current password'
+                        : ''
+                    }
+                    onChange={(event) =>
+                      setUserPassword(
+                        event.target.value,
+                      )
+                    }
+                  />
+                </label>
+              )}
 
               {canViewGroups && (
                 <div className="access-form-section">
@@ -6254,6 +6289,7 @@ function AccessPage({
               <div className="modal-actions access-user-modal-actions">
                 <div>
                   {editingUser &&
+                    editingUser.auth_type === 'local' &&
                     editingUser.id !== currentUser.id && (
                       <button
                         type="button"
@@ -6370,6 +6406,750 @@ function AccessPage({
   )
 }
 
+
+function AuthenticationPage() {
+  const [ldapStatus, setLdapStatus] = useState<
+    'loading' | 'not-configured' | 'configured' | 'enabled'
+  >('loading')
+
+  useEffect(() => {
+    async function loadLDAPStatus() {
+      try {
+        const response = await fetch(
+          '/api/v1/settings/authentication/ldap',
+          {
+            credentials: 'include',
+          },
+        )
+
+        if (!response.ok) {
+          setLdapStatus('not-configured')
+          return
+        }
+
+        const data = await response.json()
+
+        if (data.enabled) {
+          setLdapStatus('enabled')
+        } else if (
+          data.host ||
+          data.base_dn ||
+          data.bind_password_configured
+        ) {
+          setLdapStatus('configured')
+        } else {
+          setLdapStatus('not-configured')
+        }
+      } catch {
+        setLdapStatus('not-configured')
+      }
+    }
+
+    void loadLDAPStatus()
+  }, [])
+
+  const ldapStatusLabel =
+    ldapStatus === 'enabled'
+      ? 'Enabled'
+      : ldapStatus === 'configured'
+        ? 'Configured'
+        : ldapStatus === 'loading'
+          ? 'Loading...'
+          : 'Not configured'
+
+  return (
+    <section className="settings-page">
+      <div className="settings-content">
+        <NavLink
+          to="/settings"
+          className="host-back-link"
+        >
+          ← Settings
+        </NavLink>
+
+        <div className="settings-group">
+          <div className="settings-group-heading">
+            <h2>Authentication providers</h2>
+            <p>
+              Configure how users sign in to this FERPEK Lens instance.
+            </p>
+          </div>
+
+          <div className="panel settings-list-panel">
+            <div className="settings-list-row">
+              <div>
+                <h3>Local authentication</h3>
+                <p>
+                  FERPEK Lens local accounts remain available for
+                  administration and recovery.
+                </p>
+              </div>
+
+              <span className="auth-provider-status enabled">
+                Enabled
+              </span>
+            </div>
+
+            <NavLink
+              to="/settings/authentication/ldap"
+              className="settings-list-row settings-navigation-row"
+            >
+              <div>
+                <h3>LDAP</h3>
+                <p>
+                  Authenticate users against an LDAP directory.
+                </p>
+              </div>
+
+              <div className="auth-provider-side">
+                <span
+                  className={`auth-provider-status ${
+                    ldapStatus === 'enabled' ? 'enabled' : ''
+                  }`}
+                >
+                  {ldapStatusLabel}
+                </span>
+
+                <span className="settings-row-arrow">
+                  ›
+                </span>
+              </div>
+            </NavLink>
+
+            <div className="settings-list-row settings-navigation-row">
+              <div>
+                <h3>Active Directory</h3>
+                <p>
+                  Authenticate users against Microsoft Active Directory.
+                </p>
+              </div>
+
+              <div className="auth-provider-side">
+                <span className="auth-provider-status">
+                  Not configured
+                </span>
+
+                <span className="settings-row-arrow">
+                  ›
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="auth-break-glass-note">
+          <strong>Local recovery access</strong>
+          <span>
+            Local administrator accounts remain available even when
+            an external authentication provider is enabled.
+          </span>
+        </div>
+      </div>
+    </section>
+  )
+}
+
+
+function LDAPSettingsPage() {
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [testing, setTesting] = useState(false)
+
+  const [enabled, setEnabled] = useState(false)
+  const [host, setHost] = useState('')
+  const [port, setPort] = useState(389)
+  const [security, setSecurity] = useState('plain')
+  const [baseDn, setBaseDn] = useState('')
+  const [bindDn, setBindDn] = useState('')
+  const [bindPassword, setBindPassword] = useState('')
+  const [
+    bindPasswordConfigured,
+    setBindPasswordConfigured,
+  ] = useState(false)
+  const [userSearchBase, setUserSearchBase] = useState('')
+  const [userFilter, setUserFilter] =
+    useState('(uid={username})')
+  const [usernameAttribute, setUsernameAttribute] =
+    useState('uid')
+
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+
+  const [testUsername, setTestUsername] = useState('')
+  const [testPassword, setTestPassword] = useState('')
+  const [testUserLoading, setTestUserLoading] = useState(false)
+  const [testUserMessage, setTestUserMessage] = useState('')
+  const [testUserError, setTestUserError] = useState('')
+  const [testUserResult, setTestUserResult] = useState<{
+    username: string
+    display_name: string
+    email: string
+    dn: string
+  } | null>(null)
+
+  useEffect(() => {
+    async function loadLDAPSettings() {
+      try {
+        const response = await fetch(
+          '/api/v1/settings/authentication/ldap',
+          {
+            credentials: 'include',
+          },
+        )
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`)
+        }
+
+        const data = await response.json()
+
+        setEnabled(Boolean(data.enabled))
+        setHost(data.host ?? '')
+        setPort(Number(data.port ?? 389))
+        setSecurity(data.security ?? 'plain')
+        setBaseDn(data.base_dn ?? '')
+        setBindDn(data.bind_dn ?? '')
+        setBindPasswordConfigured(
+          Boolean(data.bind_password_configured),
+        )
+        setUserSearchBase(data.user_search_base ?? '')
+        setUserFilter(
+          data.user_filter ?? '(uid={username})',
+        )
+        setUsernameAttribute(
+          data.username_attribute ?? 'uid',
+        )
+      } catch {
+        setError('Could not load LDAP settings.')
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    void loadLDAPSettings()
+  }, [])
+
+  async function testLDAPConnection() {
+    setTesting(true)
+    setMessage('')
+    setError('')
+
+    const payload: Record<string, unknown> = {
+      enabled,
+      host,
+      port,
+      security,
+      base_dn: baseDn,
+      bind_dn: bindDn,
+      user_search_base: userSearchBase,
+      user_filter: userFilter,
+      username_attribute: usernameAttribute,
+    }
+
+    if (bindPassword) {
+      payload.bind_password = bindPassword
+    }
+
+    try {
+      const response = await fetch(
+        '/api/v1/settings/authentication/ldap/test',
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        },
+      )
+
+      const data = await response
+        .json()
+        .catch(() => null)
+
+      if (!response.ok) {
+        throw new Error(
+          typeof data?.detail === 'string'
+            ? data.detail
+            : 'LDAP connection failed.',
+        )
+      }
+
+      setMessage(
+        data?.message || 'LDAP connection successful.',
+      )
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'LDAP connection failed.',
+      )
+    } finally {
+      setTesting(false)
+    }
+  }
+
+
+  async function testLDAPUser() {
+    if (!testUsername.trim() || !testPassword) {
+      setTestUserResult(null)
+      setTestUserMessage('')
+      setTestUserError(
+        'Enter a username and password to test authentication.',
+      )
+      return
+    }
+
+    setTestUserLoading(true)
+    setTestUserResult(null)
+    setTestUserMessage('')
+    setTestUserError('')
+
+    try {
+      const response = await fetch(
+        '/api/v1/settings/authentication/ldap/test-user',
+        {
+          method: 'POST',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            username: testUsername.trim(),
+            password: testPassword,
+          }),
+        },
+      )
+
+      const data = await response
+        .json()
+        .catch(() => null)
+
+      if (!response.ok) {
+        throw new Error(
+          typeof data?.detail === 'string'
+            ? data.detail
+            : 'LDAP user authentication failed.',
+        )
+      }
+
+      setTestUserResult(data.user ?? null)
+      setTestUserMessage(
+        data?.message ||
+          'LDAP user authentication successful.',
+      )
+      setTestPassword('')
+    } catch (err) {
+      setTestUserError(
+        err instanceof Error
+          ? err.message
+          : 'LDAP user authentication failed.',
+      )
+    } finally {
+      setTestUserLoading(false)
+    }
+  }
+
+
+  async function saveLDAPSettings(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault()
+
+    setSaving(true)
+    setMessage('')
+    setError('')
+
+    const payload: Record<string, unknown> = {
+      enabled,
+      host,
+      port,
+      security,
+      base_dn: baseDn,
+      bind_dn: bindDn,
+      user_search_base: userSearchBase,
+      user_filter: userFilter,
+      username_attribute: usernameAttribute,
+    }
+
+    if (bindPassword) {
+      payload.bind_password = bindPassword
+    }
+
+    try {
+      const response = await fetch(
+        '/api/v1/settings/authentication/ldap',
+        {
+          method: 'PUT',
+          credentials: 'include',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        },
+      )
+
+      if (!response.ok) {
+        let detail = 'Could not save LDAP settings.'
+
+        try {
+          const data = await response.json()
+
+          if (typeof data?.detail === 'string') {
+            detail = data.detail
+          }
+        } catch {
+          // Keep generic message.
+        }
+
+        throw new Error(detail)
+      }
+
+      const data = await response.json()
+
+      setBindPassword('')
+      setBindPasswordConfigured(
+        Boolean(data.bind_password_configured),
+      )
+
+      setMessage('LDAP settings saved.')
+    } catch (err) {
+      setError(
+        err instanceof Error
+          ? err.message
+          : 'Could not save LDAP settings.',
+      )
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <section className="settings-page">
+      <div className="settings-content">
+        <NavLink
+          to="/settings/authentication"
+          className="host-back-link"
+        >
+          ← Authentication
+        </NavLink>
+
+        <div className="settings-group">
+          <div className="settings-group-heading">
+            <h2>LDAP configuration</h2>
+            <p>
+              Connect FERPEK Lens to an LDAP directory for user
+              authentication.
+            </p>
+          </div>
+
+          {loading ? (
+            <div className="panel ldap-settings-card">
+              <p className="ldap-loading">
+                Loading LDAP settings...
+              </p>
+            </div>
+          ) : (
+            <form
+              className="panel ldap-settings-card"
+              onSubmit={saveLDAPSettings}
+            >
+              <div className="ldap-setting-row ldap-enabled-row">
+                <div>
+                  <strong>LDAP authentication</strong>
+                  <span>
+                    Allow users to authenticate using this directory.
+                  </span>
+                </div>
+
+                <label className="setting-switch">
+                  <input
+                    type="checkbox"
+                    checked={enabled}
+                    onChange={(event) =>
+                      setEnabled(event.target.checked)
+                    }
+                  />
+                  <span className="setting-switch-track" />
+                </label>
+              </div>
+
+              <div className="ldap-form-grid">
+                <label className="ldap-field ldap-field-grow">
+                  <span>Host</span>
+                  <input
+                    value={host}
+                    onChange={(event) =>
+                      setHost(event.target.value)
+                    }
+                    placeholder="ldap.example.com"
+                  />
+                </label>
+
+                <label className="ldap-field ldap-port-field">
+                  <span>Port</span>
+                  <input
+                    type="number"
+                    min="1"
+                    max="65535"
+                    value={port}
+                    onChange={(event) =>
+                      setPort(Number(event.target.value))
+                    }
+                  />
+                </label>
+
+                <label className="ldap-field ldap-security-field">
+                  <span>Security</span>
+                  <select
+                    value={security}
+                    onChange={(event) => {
+                      const nextSecurity = event.target.value
+                      const previousSecurity = security
+
+                      setSecurity(nextSecurity)
+
+                      const previousDefaultPort =
+                        previousSecurity === 'ldaps'
+                          ? 636
+                          : 389
+
+                      if (port === previousDefaultPort) {
+                        setPort(
+                          nextSecurity === 'ldaps'
+                            ? 636
+                            : 389,
+                        )
+                      }
+                    }}
+                  >
+                    <option value="plain">Plain LDAP</option>
+                    <option value="starttls">StartTLS</option>
+                    <option value="ldaps">LDAPS</option>
+                  </select>
+                </label>
+              </div>
+
+              <div className="ldap-field-stack">
+                <label className="ldap-field">
+                  <span>Base DN</span>
+                  <input
+                    value={baseDn}
+                    onChange={(event) =>
+                      setBaseDn(event.target.value)
+                    }
+                    placeholder="dc=example,dc=com"
+                  />
+                </label>
+
+                <label className="ldap-field">
+                  <span>Bind DN</span>
+                  <input
+                    value={bindDn}
+                    onChange={(event) =>
+                      setBindDn(event.target.value)
+                    }
+                    placeholder="cn=service,dc=example,dc=com"
+                  />
+                </label>
+
+                <label className="ldap-field">
+                  <span>Bind password</span>
+                  <input
+                    type="password"
+                    autoComplete="new-password"
+                    value={bindPassword}
+                    onChange={(event) =>
+                      setBindPassword(event.target.value)
+                    }
+                    placeholder={
+                      bindPasswordConfigured
+                        ? 'Password already configured'
+                        : 'Enter bind password'
+                    }
+                  />
+
+                  <small>
+                    {bindPasswordConfigured
+                      ? 'Leave blank to keep the current password.'
+                      : 'Stored encrypted by FERPEK.'}
+                  </small>
+                </label>
+              </div>
+
+              <div className="ldap-subsection">
+                <div className="ldap-subsection-heading">
+                  <strong>User lookup</strong>
+                  <span>
+                    Define how FERPEK Lens locates directory users.
+                  </span>
+                </div>
+
+                <div className="ldap-field-stack">
+                  <label className="ldap-field">
+                    <span>User search base</span>
+                    <input
+                      value={userSearchBase}
+                      onChange={(event) =>
+                        setUserSearchBase(event.target.value)
+                      }
+                      placeholder="ou=users,dc=example,dc=com"
+                    />
+                  </label>
+
+                  <label className="ldap-field">
+                    <span>User filter</span>
+                    <input
+                      value={userFilter}
+                      onChange={(event) =>
+                        setUserFilter(event.target.value)
+                      }
+                      placeholder="(uid={username})"
+                    />
+                    <small>
+                      Use {'{username}'} where the login name should
+                      be inserted.
+                    </small>
+                  </label>
+
+                  <label className="ldap-field">
+                    <span>Username attribute</span>
+                    <input
+                      value={usernameAttribute}
+                      onChange={(event) =>
+                        setUsernameAttribute(event.target.value)
+                      }
+                      placeholder="uid"
+                    />
+                  </label>
+                </div>
+              </div>
+
+              <div className="ldap-subsection ldap-test-user-section">
+                <div className="ldap-subsection-heading">
+                  <strong>Test user</strong>
+                  <span>
+                    Verify that FERPEK Lens can find and authenticate
+                    a directory user.
+                  </span>
+                </div>
+
+                <div className="ldap-test-user-grid">
+                  <label className="ldap-field">
+                    <span>Username</span>
+                    <input
+                      value={testUsername}
+                      onChange={(event) =>
+                        setTestUsername(event.target.value)
+                      }
+                      placeholder="alice"
+                      autoComplete="off"
+                    />
+                  </label>
+
+                  <label className="ldap-field">
+                    <span>Password</span>
+                    <input
+                      type="password"
+                      value={testPassword}
+                      onChange={(event) =>
+                        setTestPassword(event.target.value)
+                      }
+                      placeholder="User password"
+                      autoComplete="new-password"
+                    />
+                  </label>
+
+                  <button
+                    type="button"
+                    className="secondary-button ldap-test-user-button"
+                    onClick={() => void testLDAPUser()}
+                    disabled={testUserLoading}
+                  >
+                    {testUserLoading
+                      ? 'Testing...'
+                      : 'Test user'}
+                  </button>
+                </div>
+
+                {(testUserMessage ||
+                  testUserError ||
+                  testUserResult) && (
+                  <div className="ldap-test-user-result">
+                    {testUserMessage && (
+                      <p className="save-message">
+                        {testUserMessage}
+                      </p>
+                    )}
+
+                    {testUserError && (
+                      <p className="save-error">
+                        {testUserError}
+                      </p>
+                    )}
+
+                    {testUserResult && (
+                      <div className="ldap-test-user-details">
+                        <strong>
+                          {testUserResult.display_name ||
+                            testUserResult.username}
+                        </strong>
+
+                        <span>
+                          {testUserResult.username}
+                          {testUserResult.email
+                            ? ` · ${testUserResult.email}`
+                            : ''}
+                        </span>
+
+                        <small>
+                          {testUserResult.dn}
+                        </small>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <div className="ldap-actions">
+                <div>
+                  {message && (
+                    <p className="save-message">{message}</p>
+                  )}
+
+                  {error && (
+                    <p className="save-error">{error}</p>
+                  )}
+                </div>
+
+                <div className="ldap-action-buttons">
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => void testLDAPConnection()}
+                    disabled={testing || saving}
+                  >
+                    {testing
+                      ? 'Testing...'
+                      : 'Test connection'}
+                  </button>
+
+                  <button
+                    type="submit"
+                    className="secondary-button"
+                    disabled={saving || testing}
+                  >
+                    {saving ? 'Saving...' : 'Save changes'}
+                  </button>
+                </div>
+              </div>
+            </form>
+          )}
+        </div>
+      </div>
+    </section>
+  )
+}
 
 function Settings({
   currentUser,
@@ -6718,7 +7498,10 @@ function Settings({
                   currentUser,
                   'settings.auth_manage',
                 ) && (
-                  <div className="settings-list-row settings-navigation-row">
+                  <NavLink
+                    to="/settings/authentication"
+                    className="settings-list-row settings-navigation-row"
+                  >
                     <div>
                       <h3>Authentication</h3>
                       <p>
@@ -6729,7 +7512,7 @@ function Settings({
                     <span className="settings-row-arrow">
                       ›
                     </span>
-                  </div>
+                  </NavLink>
                 )}
               </div>
             </div>
@@ -6739,7 +7522,7 @@ function Settings({
           <div className="settings-group-heading">
             <h2>Packs</h2>
             <p>
-              Control which pack sources this FERPEK instance may use.
+              Control which pack sources this FERPEK Lens instance may use.
             </p>
           </div>
 
@@ -6859,7 +7642,7 @@ function Settings({
           <div className="settings-group-heading">
             <h2>Data retention</h2>
             <p>
-              Control how long FERPEK keeps historical data.
+              Control how long FERPEK Lens keeps historical data.
             </p>
           </div>
 
@@ -7203,6 +7986,23 @@ function Layout({
                 }
               />
             )}
+
+            {hasPermission(
+              currentUser,
+              'settings.auth_manage',
+            ) && (
+              <>
+                <Route
+                  path="/settings/authentication"
+                  element={<AuthenticationPage />}
+                />
+
+                <Route
+                  path="/settings/authentication/ldap"
+                  element={<LDAPSettingsPage />}
+                />
+              </>
+            )}
           </Routes>
         </div>
       </main>
@@ -7219,11 +8019,15 @@ type AuthMode =
 function FerpekAuthBrand() {
   return (
     <div className="auth-brand">
-      <span className="auth-brand-mark">◇</span>
+      <img
+        className="auth-brand-logo"
+        src="/ferpek_original_sem_nome_laranja_transparente.svg"
+        alt=""
+      />
 
-      <div>
+      <div className="auth-brand-wordmark">
         <strong>FERPEK</strong>
-        <span>LENS</span>
+        <span>Lens</span>
       </div>
     </div>
   )
@@ -7267,7 +8071,7 @@ function LoginScreen({
 
       onAuthenticated()
     } catch {
-      setError('Unable to contact the FERPEK server.')
+      setError('Unable to contact the FERPEK Lens server.')
     } finally {
       setSubmitting(false)
     }
@@ -7399,7 +8203,7 @@ function InitialSetupScreen({
 
         setError(
           data?.detail ||
-            'Unable to complete FERPEK setup.',
+            'Unable to complete FERPEK Lens setup.',
         )
         return
       }
@@ -7428,7 +8232,7 @@ function InitialSetupScreen({
 
       onAuthenticated()
     } catch {
-      setError('Unable to contact the FERPEK server.')
+      setError('Unable to contact the FERPEK Lens server.')
     } finally {
       setSubmitting(false)
     }

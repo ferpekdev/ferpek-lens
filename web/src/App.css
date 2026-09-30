@@ -6090,3 +6090,851 @@ section {
   margin-right: auto;
 }
 
+
+/* ---------------------------------------------------------
+   FERPEK brand
+   --------------------------------------------------------- */
+
+.brand {
+  text-decoration: none;
+  color: inherit;
+}
+
+.brand-logo {
+  width: 24px;
+  height: 24px;
+  flex: 0 0 24px;
+  display: block;
+  object-fit: contain;
+}
+
+.brand:hover .brand-name {
+  opacity: 0.85;
+}
+
+.brand:hover .brand-logo {
+  opacity: 0.9;
+}
+
+/* FERPEK Lens sidebar wordmark refinement */
+
+.brand-logo {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+}
+
+.brand-wordmark {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.brand-name {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+}
+
+.brand-product {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+/* FERPEK Lens sidebar wordmark refinement */
+
+.brand-logo {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+}
+
+.brand-wordmark {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.brand-name {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+}
+
+.brand-product {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+/* FERPEK Lens final brand sizing */
+
+.brand-logo {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+}
+
+.brand-product {
+  color: #b85f31;
+}
+
+/* FERPEK Lens auth branding */
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.auth-brand-logo {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: block;
+  object-fit: contain;
+}
+
+.auth-brand-wordmark {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.auth-brand-wordmark strong {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+}
+
+.auth-brand-wordmark span {
+  color: #b85f31;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* FERPEK Lens auth branding */
+
+.auth-brand {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.auth-brand-logo {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  display: block;
+  object-fit: contain;
+}
+
+.auth-brand-wordmark {
+  display: flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+.auth-brand-wordmark strong {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: 1.4px;
+}
+
+.auth-brand-wordmark span {
+  color: #b85f31;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+/* Auth brand — larger FERPEK Lens lockup */
+
+.auth-brand-logo {
+  width: 42px;
+  height: 42px;
+  flex: 0 0 42px;
+}
+
+.auth-brand-wordmark {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.auth-brand-wordmark strong {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+}
+
+.auth-brand-wordmark span {
+  color: #b85f31;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+/* Auth brand — force FERPEK Lens onto one line */
+.auth-brand > .auth-brand-wordmark {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.auth-brand > .auth-brand-wordmark strong,
+.auth-brand > .auth-brand-wordmark span {
+  display: inline-block;
+  margin: 0;
+}
+
+.auth-brand > .auth-brand-wordmark span {
+  color: #b85f31;
+}
+
+/* Auth brand — larger lockup */
+
+.auth-brand-logo {
+  width: 52px;
+  height: 52px;
+  flex: 0 0 52px;
+}
+
+.auth-brand {
+  gap: 12px;
+}
+
+.auth-brand > .auth-brand-wordmark {
+  gap: 7px;
+}
+
+.auth-brand > .auth-brand-wordmark strong {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+}
+
+.auth-brand > .auth-brand-wordmark span {
+  color: #b85f31;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* Sidebar brand — slightly larger */
+
+.brand-logo {
+  width: 38px;
+  height: 38px;
+  flex: 0 0 38px;
+}
+
+.brand-name {
+  font-size: 14px;
+}
+
+.brand-product {
+  font-size: 12px;
+}
+
+/* Sidebar — cleaner navigation */
+
+.navigation .nav-item {
+  padding-left: 14px;
+}
+
+/* Keep Settings icon visible and slightly larger */
+.sidebar-bottom .nav-item .nav-icon {
+  width: 18px;
+  min-width: 18px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* Counters remain aligned on the right */
+.nav-count {
+  margin-left: auto;
+}
+
+/* ---------------------------------------------------------
+   Authentication providers
+   --------------------------------------------------------- */
+
+.auth-provider-side {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.auth-provider-status {
+  color: var(--text-dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.auth-provider-status.enabled {
+  color: var(--success);
+}
+
+.auth-break-glass-note {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 11px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.auth-break-glass-note strong {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.auth-break-glass-note span {
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+/* ---------------------------------------------------------
+   Global readability refinement
+   --------------------------------------------------------- */
+
+/* Settings section headings */
+.settings-group-heading h2 {
+  font-size: 14px;
+}
+
+.settings-group-heading p {
+  font-size: 11px;
+}
+
+/* Settings rows */
+.settings-list-row h3 {
+  font-size: 12px;
+}
+
+.settings-list-row p {
+  font-size: 11px;
+}
+
+/* Authentication provider metadata */
+.auth-provider-status {
+  font-size: 11px;
+}
+
+.auth-break-glass-note strong {
+  font-size: 11px;
+}
+
+.auth-break-glass-note span {
+  font-size: 11px;
+}
+
+/* Packs */
+.settings-content .pack-setting-row strong {
+  font-size: 12px;
+}
+
+.settings-content .pack-setting-row span:not(.setting-switch-track) {
+  font-size: 11px;
+}
+
+/* Retention */
+.settings-content .retention-field label {
+  font-size: 12px;
+}
+
+.settings-content .retention-field > span,
+.settings-content .retention-input-row span {
+  font-size: 11px;
+}
+
+/* Sidebar */
+.navigation .nav-item {
+  font-size: 13px;
+}
+
+.sidebar-user-info strong {
+  font-size: 12px;
+}
+
+.sidebar-user-info span {
+  font-size: 10px;
+}
+
+/* Topbar */
+.topbar h1 {
+  font-size: 18px;
+}
+
+.topbar p {
+  font-size: 11px;
+}
+
+/* ---------------------------------------------------------
+   Settings / Access — readability + consistent width
+   --------------------------------------------------------- */
+
+.access-page {
+  width: 100%;
+  max-width: 1050px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Main headings inside settings sub-pages */
+.access-page .section-heading h2,
+.settings-page .settings-group-heading h2 {
+  font-size: 15px;
+}
+
+.access-page .section-heading p,
+.settings-page .settings-group-heading p {
+  font-size: 12px;
+}
+
+/* Access tabs */
+.access-tabs button {
+  font-size: 12px;
+}
+
+/* Users */
+.access-user-main strong,
+.access-group-heading strong {
+  font-size: 14px;
+}
+
+.access-user-main span,
+.access-list-meta,
+.access-group-meta {
+  font-size: 11px;
+}
+
+/* Group cards / descriptions */
+.access-group-row > p {
+  font-size: 11px;
+}
+
+/* Settings and Authentication rows */
+.settings-list-row h3 {
+  font-size: 13px;
+}
+
+.settings-list-row p {
+  font-size: 12px;
+}
+
+.auth-provider-status {
+  font-size: 11px;
+}
+
+/* Sidebar stays readable without becoming oversized */
+.navigation .nav-item {
+  font-size: 13px;
+}
+
+/* Authentication — match Access readability */
+
+.settings-page .settings-list-row {
+  min-height: 64px;
+  padding: 12px 14px;
+}
+
+.settings-page .settings-list-row h3 {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.settings-page .settings-list-row p {
+  margin-top: 4px;
+  font-size: 12px;
+}
+
+.settings-page .auth-provider-status {
+  font-size: 12px;
+}
+
+.settings-page .auth-break-glass-note {
+  padding: 13px 14px;
+}
+
+.settings-page .auth-break-glass-note strong {
+  font-size: 12px;
+}
+
+.settings-page .auth-break-glass-note span {
+  font-size: 11px;
+}
+
+/* Settings sub-pages — consistent hierarchy */
+
+.access-page,
+.settings-page {
+  max-width: 1050px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.access-page-actions {
+  margin-bottom: 6px;
+}
+
+.access-page .access-tabs {
+  margin-top: 0;
+}
+
+/* Authentication starts directly with its content */
+.settings-page > .settings-content > .settings-group:first-child {
+  margin-top: 0;
+}
+
+/* Settings sub-pages — consistent back link */
+
+.settings-page .host-back-link,
+.access-page .host-back-link {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-bottom: 10px;
+  color: var(--text);
+  text-decoration: none;
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.settings-page .host-back-link:hover,
+.access-page .host-back-link:hover {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.settings-page .host-back-link:visited,
+.access-page .host-back-link:visited {
+  color: var(--text);
+}
+
+/* Settings back link — accent hover */
+.settings-page .host-back-link:hover,
+.settings-page .host-back-link:visited:hover,
+.access-page .host-back-link:hover,
+.access-page .host-back-link:visited:hover {
+  color: #b85f31;
+}
+
+/* ---------------------------------------------------------
+   LDAP authentication settings
+   --------------------------------------------------------- */
+
+.ldap-settings-card {
+  overflow: hidden;
+  padding: 0;
+}
+
+.ldap-loading {
+  margin: 0;
+  padding: 16px;
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.ldap-setting-row {
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ldap-setting-row > div {
+  min-width: 0;
+}
+
+.ldap-setting-row strong,
+.ldap-subsection-heading strong {
+  display: block;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.ldap-setting-row span,
+.ldap-subsection-heading span {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.ldap-form-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 100px 170px;
+  gap: 12px;
+  padding: 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.ldap-field-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+}
+
+.ldap-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ldap-field > span {
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ldap-field input,
+.ldap-field select {
+  width: 100%;
+  height: 36px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  outline: none;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.ldap-field input:focus,
+.ldap-field select:focus {
+  border-color: #b85f31;
+  box-shadow: 0 0 0 2px var(--brand-soft);
+}
+
+.ldap-field small {
+  color: var(--text-dim);
+  font-size: 10px;
+  line-height: 1.4;
+}
+
+.ldap-subsection {
+  border-top: 1px solid var(--border);
+}
+
+.ldap-subsection-heading {
+  padding: 14px 14px 0;
+}
+
+.ldap-actions {
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.ldap-actions .save-message,
+.ldap-actions .save-error {
+  margin: 0;
+  font-size: 11px;
+}
+
+@media (max-width: 800px) {
+  .ldap-form-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Authentication recovery note — informational, not a provider card */
+.settings-page .auth-break-glass-note {
+  margin-top: 10px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.settings-page .auth-break-glass-note strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.settings-page .auth-break-glass-note span {
+  margin-top: 3px;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+/* LDAP actions */
+
+.ldap-action-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* LDAP — test directory user */
+
+.ldap-test-user-section {
+  padding-bottom: 14px;
+}
+
+.ldap-test-user-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  padding: 14px;
+}
+
+.ldap-test-user-button {
+  height: 36px;
+  white-space: nowrap;
+}
+
+.ldap-test-user-result {
+  margin: 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-hover);
+}
+
+.ldap-test-user-result p {
+  margin: 0;
+}
+
+.ldap-test-user-details {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 8px;
+}
+
+.ldap-test-user-details strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ldap-test-user-details span {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.ldap-test-user-details small {
+  color: var(--text-dim);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 800px) {
+  .ldap-test-user-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ldap-test-user-button {
+    width: fit-content;
+  }
+}
+
+/* LDAP — test directory user */
+
+.ldap-test-user-section {
+  padding-bottom: 14px;
+}
+
+.ldap-test-user-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  padding: 14px;
+}
+
+.ldap-test-user-button {
+  height: 36px;
+  white-space: nowrap;
+}
+
+.ldap-test-user-result {
+  margin: 0 14px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-hover);
+}
+
+.ldap-test-user-result p {
+  margin: 0;
+}
+
+.ldap-test-user-details {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 8px;
+}
+
+.ldap-test-user-details strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.ldap-test-user-details span {
+  color: var(--text);
+  font-size: 11px;
+}
+
+.ldap-test-user-details small {
+  color: var(--text-dim);
+  font-size: 10px;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 800px) {
+  .ldap-test-user-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .ldap-test-user-button {
+    width: fit-content;
+  }
+}
+
+/* LDAP-managed user identity */
+
+.access-auth-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-hover);
+}
+
+.access-auth-provider strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.access-auth-provider span {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.access-user-form input:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}

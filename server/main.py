@@ -18,6 +18,7 @@ import re
 import secrets
 import hashlib
 import sqlite3
+import ssl
 import threading
 import time
 import shutil
@@ -26,6 +27,10 @@ import zipfile
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
+from cryptography.fernet import Fernet, InvalidToken
+from ldap3 import BASE, SUBTREE, Connection, Server, Tls
+from ldap3.core.exceptions import LDAPException
+from ldap3.utils.conv import escape_filter_chars
 from fastapi.responses import FileResponse
 from fastapi import Cookie, Depends, FastAPI, File, Header, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel, Field
@@ -36,6 +41,12 @@ from packaging.specifiers import SpecifierSet
 from packaging.version import Version, InvalidVersion
 
 DB_PATH = os.environ.get("DB_PATH", "/data/ferpek.db")
+SECRET_KEY_PATH = Path(
+    os.environ.get(
+        "FERPEK_SECRET_KEY_PATH",
+        "/data/ferpek-secret.key",
+    )
+)
 
 BUILTIN_PACKS_PATH = Path("/app/packs")
 INSTALLED_PACKS_PATH = Path("/data/packs")
@@ -546,6 +557,110 @@ def init_db():
 
 
 
+def get_setting_text(
+    key: str,
+    default: str = "",
+) -> str:
+    try:
+        with db() as conn:
+            row = conn.execute(
+                """
+                SELECT value
+                FROM settings
+                WHERE key = ?
+                """,
+                (key,),
+            ).fetchone()
+
+        if row is None:
+            return default
+
+        return str(row["value"])
+
+    except sqlite3.Error:
+        return default
+
+
+def set_setting(
+    conn: sqlite3.Connection,
+    key: str,
+    value: str,
+    now: int,
+):
+    conn.execute(
+        """
+        INSERT INTO settings
+            (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key)
+        DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        """,
+        (
+            key,
+            value,
+            now,
+        ),
+    )
+
+
+def get_secret_fernet() -> Fernet:
+    SECRET_KEY_PATH.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    if not SECRET_KEY_PATH.exists():
+        key = Fernet.generate_key()
+
+        fd = os.open(
+            SECRET_KEY_PATH,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL,
+            0o600,
+        )
+
+        try:
+            os.write(fd, key)
+        finally:
+            os.close(fd)
+
+    key = SECRET_KEY_PATH.read_bytes().strip()
+
+    try:
+        return Fernet(key)
+    except Exception as exc:
+        raise RuntimeError(
+            "Invalid FERPEK secret key"
+        ) from exc
+
+
+def encrypt_secret(value: str) -> str:
+    return (
+        get_secret_fernet()
+        .encrypt(value.encode("utf-8"))
+        .decode("ascii")
+    )
+
+
+def decrypt_secret(value: str) -> str:
+    if not value:
+        return ""
+
+    try:
+        return (
+            get_secret_fernet()
+            .decrypt(value.encode("ascii"))
+            .decode("utf-8")
+        )
+    except InvalidToken as exc:
+        raise RuntimeError(
+            "Could not decrypt FERPEK secret"
+        ) from exc
+
+
 def get_setting_int(key: str, default: int) -> int:
     try:
         with db() as conn:
@@ -851,6 +966,70 @@ class UserUpdate(BaseModel):
     group_ids: Optional[list[int]] = None
 
 
+class LDAPSettings(BaseModel):
+    enabled: bool = False
+
+    host: str = Field(
+        default="",
+        max_length=255,
+    )
+
+    port: int = Field(
+        default=389,
+        ge=1,
+        le=65535,
+    )
+
+    security: str = Field(
+        default="plain",
+        pattern=r"^(plain|starttls|ldaps)$",
+    )
+
+    base_dn: str = Field(
+        default="",
+        max_length=512,
+    )
+
+    bind_dn: str = Field(
+        default="",
+        max_length=512,
+    )
+
+    bind_password: Optional[str] = Field(
+        default=None,
+        max_length=1024,
+    )
+
+    clear_bind_password: bool = False
+
+    user_search_base: str = Field(
+        default="",
+        max_length=512,
+    )
+
+    user_filter: str = Field(
+        default="(uid={username})",
+        max_length=512,
+    )
+
+    username_attribute: str = Field(
+        default="uid",
+        min_length=1,
+        max_length=128,
+    )
+
+
+class LDAPTestUserRequest(BaseModel):
+    username: str = Field(
+        min_length=1,
+        max_length=128,
+    )
+    password: str = Field(
+        min_length=1,
+        max_length=1024,
+    )
+
+
 class PackSettings(BaseModel):
     allow_community_packs: bool = False
     allow_local_packs: bool = True
@@ -1144,6 +1323,14 @@ def login(
 ):
     username = credentials.username.strip()
 
+    if not username:
+        raise HTTPException(
+            401,
+            "Invalid username or password",
+        )
+
+    ldap_user = None
+
     with db() as conn:
         user = conn.execute(
             """
@@ -1154,10 +1341,14 @@ def login(
             (username,),
         ).fetchone()
 
+    # -----------------------------------------------------
+    # Local authentication always takes precedence.
+    # This preserves local recovery/admin access.
+    # -----------------------------------------------------
+
+    if user is not None and user["auth_type"] == "local":
         if (
-            user is None
-            or not bool(user["enabled"])
-            or user["auth_type"] != "local"
+            not bool(user["enabled"])
             or not user["password_hash"]
             or not verify_local_password(
                 credentials.password,
@@ -1169,12 +1360,196 @@ def login(
                 "Invalid username or password",
             )
 
-        token = secrets.token_urlsafe(48)
-        token_hash = hash_session_token(token)
+    # -----------------------------------------------------
+    # LDAP authentication
+    # -----------------------------------------------------
+
+    else:
+        if not get_setting_bool(
+            "ldap_enabled",
+            False,
+        ):
+            raise HTTPException(
+                401,
+                "Invalid username or password",
+            )
+
+        # Existing LDAP users may be disabled explicitly
+        # by a FERPEK administrator.
+        if (
+            user is not None
+            and user["auth_type"] == "ldap"
+            and not bool(user["enabled"])
+        ):
+            raise HTTPException(
+                401,
+                "Invalid username or password",
+            )
+
+        # Do not silently convert users from some other
+        # authentication provider.
+        if (
+            user is not None
+            and user["auth_type"] not in {
+                "local",
+                "ldap",
+            }
+        ):
+            raise HTTPException(
+                401,
+                "Invalid username or password",
+            )
+
+        try:
+            ldap_user = authenticate_ldap_user(
+                username,
+                credentials.password,
+            )
+        except RuntimeError as exc:
+            print(
+                "[FERPEK LDAP] "
+                f"login authentication error: {exc}",
+                flush=True,
+            )
+
+            raise HTTPException(
+                503,
+                "Authentication service unavailable",
+            )
+
+        if ldap_user is None:
+            raise HTTPException(
+                401,
+                "Invalid username or password",
+            )
 
         now = int(time.time())
-        expires_at = now + (12 * 60 * 60)
 
+        ldap_username = (
+            ldap_user["username"].strip()
+            or username
+        )
+
+        display_name = (
+            ldap_user["display_name"].strip()
+            or ldap_username
+        )
+
+        email = ldap_user["email"].strip()
+
+        with db() as conn:
+            user = conn.execute(
+                """
+                SELECT *
+                FROM users
+                WHERE username = ? COLLATE NOCASE
+                """,
+                (username,),
+            ).fetchone()
+
+            if user is None:
+                # Check the username returned by LDAP too,
+                # in case its canonical form differs.
+                canonical_user = conn.execute(
+                    """
+                    SELECT *
+                    FROM users
+                    WHERE username = ? COLLATE NOCASE
+                    """,
+                    (ldap_username,),
+                ).fetchone()
+
+                if canonical_user is not None:
+                    # Never overwrite an existing local or
+                    # different-provider account.
+                    if canonical_user["auth_type"] != "ldap":
+                        raise HTTPException(
+                            401,
+                            "Invalid username or password",
+                        )
+
+                    user = canonical_user
+
+            if user is None:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO users
+                        (
+                            username,
+                            display_name,
+                            email,
+                            auth_type,
+                            password_hash,
+                            enabled,
+                            created_at,
+                            updated_at
+                        )
+                    VALUES (?, ?, ?, 'ldap', NULL, 1, ?, ?)
+                    """,
+                    (
+                        ldap_username,
+                        display_name,
+                        email,
+                        now,
+                        now,
+                    ),
+                )
+
+                user_id = cursor.lastrowid
+
+            else:
+                if user["auth_type"] != "ldap":
+                    raise HTTPException(
+                        401,
+                        "Invalid username or password",
+                    )
+
+                if not bool(user["enabled"]):
+                    raise HTTPException(
+                        401,
+                        "Invalid username or password",
+                    )
+
+                user_id = user["id"]
+
+                conn.execute(
+                    """
+                    UPDATE users
+                    SET
+                        display_name = ?,
+                        email = ?,
+                        password_hash = NULL,
+                        updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        display_name,
+                        email,
+                        now,
+                        user_id,
+                    ),
+                )
+
+            user = conn.execute(
+                """
+                SELECT *
+                FROM users
+                WHERE id = ?
+                """,
+                (user_id,),
+            ).fetchone()
+
+    # -----------------------------------------------------
+    # FERPEK Lens session
+    # -----------------------------------------------------
+
+    token = secrets.token_urlsafe(48)
+    token_hash = hash_session_token(token)
+
+    now = int(time.time())
+    expires_at = now + (12 * 60 * 60)
+
+    with db() as conn:
         conn.execute(
             """
             INSERT INTO web_sessions
@@ -1199,7 +1574,8 @@ def login(
         conn.execute(
             """
             UPDATE users
-            SET last_login_at = ?,
+            SET
+                last_login_at = ?,
                 updated_at = ?
             WHERE id = ?
             """,
@@ -1230,7 +1606,6 @@ def login(
             "auth_type": user["auth_type"],
         },
     }
-
 
 def get_web_user(
     ferpek_session: Optional[str] = Cookie(None),
@@ -1982,6 +2357,12 @@ def delete_user(
             raise HTTPException(
                 404,
                 "User not found",
+            )
+
+        if user["auth_type"] != "local":
+            raise HTTPException(
+                400,
+                "Directory-managed users cannot be deleted. Disable the account instead.",
             )
 
         is_administrator = conn.execute(
@@ -2979,6 +3360,692 @@ def update_agent_source(
         )
 
     return {"ok": True}
+
+
+@app.get(
+    "/api/v1/settings/authentication/ldap",
+    dependencies=[
+        Depends(
+            require_permission(
+                "settings.auth_manage"
+            )
+        )
+    ],
+)
+def get_ldap_settings():
+    encrypted_password = get_setting_text(
+        "ldap_bind_password",
+        "",
+    )
+
+    return {
+        "enabled": get_setting_bool(
+            "ldap_enabled",
+            False,
+        ),
+        "host": get_setting_text(
+            "ldap_host",
+            "",
+        ),
+        "port": get_setting_int(
+            "ldap_port",
+            389,
+        ),
+        "security": get_setting_text(
+            "ldap_security",
+            "plain",
+        ),
+        "base_dn": get_setting_text(
+            "ldap_base_dn",
+            "",
+        ),
+        "bind_dn": get_setting_text(
+            "ldap_bind_dn",
+            "",
+        ),
+        "bind_password_configured": bool(
+            encrypted_password
+        ),
+        "user_search_base": get_setting_text(
+            "ldap_user_search_base",
+            "",
+        ),
+        "user_filter": get_setting_text(
+            "ldap_user_filter",
+            "(uid={username})",
+        ),
+        "username_attribute": get_setting_text(
+            "ldap_username_attribute",
+            "uid",
+        ),
+    }
+
+
+@app.put(
+    "/api/v1/settings/authentication/ldap",
+    dependencies=[
+        Depends(
+            require_permission(
+                "settings.auth_manage"
+            )
+        )
+    ],
+)
+def update_ldap_settings(
+    settings: LDAPSettings,
+):
+    host = settings.host.strip()
+    base_dn = settings.base_dn.strip()
+    bind_dn = settings.bind_dn.strip()
+    user_search_base = (
+        settings.user_search_base.strip()
+    )
+    user_filter = settings.user_filter.strip()
+    username_attribute = (
+        settings.username_attribute.strip()
+    )
+
+    if settings.enabled:
+        if not host:
+            raise HTTPException(
+                400,
+                "LDAP host is required when LDAP is enabled",
+            )
+
+        if not base_dn:
+            raise HTTPException(
+                400,
+                "LDAP Base DN is required when LDAP is enabled",
+            )
+
+        if not user_filter:
+            raise HTTPException(
+                400,
+                "LDAP user filter is required",
+            )
+
+        if "{username}" not in user_filter:
+            raise HTTPException(
+                400,
+                "LDAP user filter must contain {username}",
+            )
+
+        if not username_attribute:
+            raise HTTPException(
+                400,
+                "LDAP username attribute is required",
+            )
+
+    now = int(time.time())
+
+    values = {
+        "ldap_enabled": (
+            "1" if settings.enabled else "0"
+        ),
+        "ldap_host": host,
+        "ldap_port": str(settings.port),
+        "ldap_security": settings.security,
+        "ldap_base_dn": base_dn,
+        "ldap_bind_dn": bind_dn,
+        "ldap_user_search_base": user_search_base,
+        "ldap_user_filter": user_filter,
+        "ldap_username_attribute": username_attribute,
+    }
+
+    with db() as conn:
+        for key, value in values.items():
+            set_setting(
+                conn,
+                key,
+                value,
+                now,
+            )
+
+        if settings.clear_bind_password:
+            conn.execute(
+                """
+                DELETE FROM settings
+                WHERE key = 'ldap_bind_password'
+                """
+            )
+
+        elif settings.bind_password is not None:
+            password = settings.bind_password
+
+            if password:
+                set_setting(
+                    conn,
+                    "ldap_bind_password",
+                    encrypt_secret(password),
+                    now,
+                )
+            else:
+                conn.execute(
+                    """
+                    DELETE FROM settings
+                    WHERE key = 'ldap_bind_password'
+                    """
+                )
+
+    return get_ldap_settings()
+
+
+@app.post(
+    "/api/v1/settings/authentication/ldap/test",
+    dependencies=[
+        Depends(
+            require_permission(
+                "settings.auth_manage"
+            )
+        )
+    ],
+)
+def test_ldap_connection(
+    settings: LDAPSettings,
+):
+    host = settings.host.strip()
+
+    if not host:
+        raise HTTPException(
+            400,
+            "LDAP host is required",
+        )
+
+    password = settings.bind_password
+
+    if password is None:
+        encrypted_password = get_setting_text(
+            "ldap_bind_password",
+            "",
+        )
+
+        if encrypted_password:
+            try:
+                password = decrypt_secret(
+                    encrypted_password
+                )
+            except RuntimeError:
+                raise HTTPException(
+                    500,
+                    "Could not read the stored LDAP bind password",
+                )
+
+    use_ssl = settings.security == "ldaps"
+
+    tls = None
+
+    if settings.security in {
+        "starttls",
+        "ldaps",
+    }:
+        tls = Tls(
+            validate=ssl.CERT_REQUIRED,
+        )
+
+    server = Server(
+        host,
+        port=settings.port,
+        use_ssl=use_ssl,
+        tls=tls,
+        connect_timeout=5,
+    )
+
+    connection = Connection(
+        server,
+        user=settings.bind_dn.strip() or None,
+        password=password or None,
+        receive_timeout=5,
+        raise_exceptions=True,
+    )
+
+    stage = "connect"
+
+    try:
+        connection.open()
+
+        if settings.security == "starttls":
+            stage = "starttls"
+            connection.start_tls()
+
+        stage = "bind"
+        connection.bind()
+
+        base_dn = settings.base_dn.strip()
+
+        if not base_dn:
+            raise HTTPException(
+                400,
+                "Base DN is required.",
+            )
+
+        user_search_base = (
+            settings.user_search_base.strip()
+            or base_dn
+        )
+
+        user_filter = settings.user_filter.strip()
+
+        if not user_filter:
+            raise HTTPException(
+                400,
+                "User filter is required.",
+            )
+
+        if "{username}" not in user_filter:
+            raise HTTPException(
+                400,
+                "User filter must contain {username}.",
+            )
+
+        username_attribute = (
+            settings.username_attribute.strip()
+        )
+
+        if not username_attribute:
+            raise HTTPException(
+                400,
+                "Username attribute is required.",
+            )
+
+        # Verify Base DN.
+        stage = "base_dn"
+
+        base_found = connection.search(
+            search_base=base_dn,
+            search_filter="(objectClass=*)",
+            search_scope=BASE,
+            attributes=["1.1"],
+        )
+
+        if not base_found:
+            raise HTTPException(
+                400,
+                "Base DN was not found in the directory.",
+            )
+
+        # Verify user search base.
+        stage = "user_search_base"
+
+        search_base_found = connection.search(
+            search_base=user_search_base,
+            search_filter="(objectClass=*)",
+            search_scope=BASE,
+            attributes=["1.1"],
+        )
+
+        if not search_base_found:
+            raise HTTPException(
+                400,
+                "User search base was not found in the directory.",
+            )
+
+        # Validate user-filter syntax.
+        stage = "user_filter"
+
+        test_filter = user_filter.replace(
+            "{username}",
+            "__ferpek_test__",
+        )
+
+        connection.search(
+            search_base=user_search_base,
+            search_filter=test_filter,
+            search_scope=SUBTREE,
+            attributes=[username_attribute],
+        )
+
+        return {
+            "ok": True,
+            "message": "LDAP configuration validated successfully.",
+        }
+
+    except HTTPException:
+        raise
+
+    except LDAPException as exc:
+        print(
+            "[FERPEK LDAP] "
+            f"validation failed during {stage}: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
+        )
+
+        messages = {
+            "connect": (
+                "Could not connect to the LDAP server. "
+                "Check the host and port."
+            ),
+            "starttls": (
+                "Could not establish StartTLS. "
+                "Check the TLS configuration and certificate."
+            ),
+            "bind": (
+                "LDAP bind failed. "
+                "Check the Bind DN and Bind password."
+            ),
+            "base_dn": (
+                "Base DN was not found in the directory."
+            ),
+            "user_search_base": (
+                "User search base was not found in the directory."
+            ),
+            "user_filter": (
+                "User filter is invalid or could not be "
+                "evaluated by the directory."
+            ),
+        }
+
+        raise HTTPException(
+            400,
+            messages.get(
+                stage,
+                "LDAP configuration validation failed.",
+            ),
+        )
+
+    except OSError as exc:
+        print(
+            "[FERPEK LDAP] "
+            f"connection error during {stage}: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
+        )
+
+        raise HTTPException(
+            400,
+            "Could not connect to the LDAP server. "
+            "Check the host and port.",
+        )
+
+    finally:
+        try:
+            connection.unbind()
+        except Exception:
+            pass
+
+
+def authenticate_ldap_user(
+    username: str,
+    password: str,
+):
+    host = get_setting_text(
+        "ldap_host",
+        "",
+    ).strip()
+
+    port = get_setting_int(
+        "ldap_port",
+        389,
+    )
+
+    security = get_setting_text(
+        "ldap_security",
+        "plain",
+    )
+
+    base_dn = get_setting_text(
+        "ldap_base_dn",
+        "",
+    ).strip()
+
+    bind_dn = get_setting_text(
+        "ldap_bind_dn",
+        "",
+    ).strip()
+
+    user_search_base = get_setting_text(
+        "ldap_user_search_base",
+        "",
+    ).strip() or base_dn
+
+    user_filter = get_setting_text(
+        "ldap_user_filter",
+        "(uid={username})",
+    ).strip()
+
+    username_attribute = get_setting_text(
+        "ldap_username_attribute",
+        "uid",
+    ).strip()
+
+    encrypted_bind_password = get_setting_text(
+        "ldap_bind_password",
+        "",
+    )
+
+    if not host:
+        raise RuntimeError(
+            "LDAP server is not configured."
+        )
+
+    if not base_dn:
+        raise RuntimeError(
+            "LDAP Base DN is not configured."
+        )
+
+    if not user_search_base:
+        raise RuntimeError(
+            "LDAP User search base is not configured."
+        )
+
+    if "{username}" not in user_filter:
+        raise RuntimeError(
+            "LDAP User filter is not configured correctly."
+        )
+
+    if not username_attribute:
+        raise RuntimeError(
+            "LDAP Username attribute is not configured."
+        )
+
+    bind_password = ""
+
+    if encrypted_bind_password:
+        bind_password = decrypt_secret(
+            encrypted_bind_password
+        )
+
+    tls = None
+
+    if security in {
+        "starttls",
+        "ldaps",
+    }:
+        tls = Tls(
+            validate=ssl.CERT_REQUIRED,
+        )
+
+    server = Server(
+        host,
+        port=port,
+        use_ssl=security == "ldaps",
+        tls=tls,
+        connect_timeout=5,
+    )
+
+    directory_connection = Connection(
+        server,
+        user=bind_dn or None,
+        password=bind_password or None,
+        receive_timeout=5,
+        raise_exceptions=True,
+    )
+
+    stage = "connect"
+
+    try:
+        directory_connection.open()
+
+        if security == "starttls":
+            stage = "starttls"
+            directory_connection.start_tls()
+
+        stage = "service_bind"
+        directory_connection.bind()
+
+        safe_username = escape_filter_chars(
+            username.strip()
+        )
+
+        search_filter = user_filter.replace(
+            "{username}",
+            safe_username,
+        )
+
+        stage = "search"
+
+        directory_connection.search(
+            search_base=user_search_base,
+            search_filter=search_filter,
+            search_scope=SUBTREE,
+            attributes=[
+                username_attribute,
+                "cn",
+                "mail",
+            ],
+            size_limit=2,
+        )
+
+        entries = list(
+            directory_connection.entries
+        )
+
+        if len(entries) == 0:
+            return None
+
+        if len(entries) > 1:
+            raise RuntimeError(
+                "LDAP user search returned multiple entries."
+            )
+
+        entry = entries[0]
+        user_dn = str(entry.entry_dn)
+
+        def attribute_value(name: str) -> str:
+            try:
+                value = entry[name].value
+
+                if value is None:
+                    return ""
+
+                return str(value)
+            except Exception:
+                return ""
+
+        resolved_username = (
+            attribute_value(username_attribute)
+            or username.strip()
+        )
+
+        display_name = (
+            attribute_value("cn")
+            or resolved_username
+        )
+
+        email = attribute_value("mail")
+
+    except LDAPException as exc:
+        print(
+            "[FERPEK LDAP] "
+            f"user lookup failed during {stage}: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
+        )
+
+        raise RuntimeError(
+            "Could not search the LDAP directory."
+        ) from exc
+
+    finally:
+        try:
+            directory_connection.unbind()
+        except Exception:
+            pass
+
+    user_connection = Connection(
+        server,
+        user=user_dn,
+        password=password,
+        receive_timeout=5,
+        raise_exceptions=True,
+    )
+
+    try:
+        user_connection.open()
+
+        if security == "starttls":
+            user_connection.start_tls()
+
+        user_connection.bind()
+
+    except LDAPException as exc:
+        print(
+            "[FERPEK LDAP] "
+            "user bind failed: "
+            f"{type(exc).__name__}: {exc}",
+            flush=True,
+        )
+
+        return None
+
+    finally:
+        try:
+            user_connection.unbind()
+        except Exception:
+            pass
+
+    return {
+        "username": resolved_username,
+        "display_name": display_name,
+        "email": email,
+        "dn": user_dn,
+    }
+
+
+@app.post(
+    "/api/v1/settings/authentication/ldap/test-user",
+    dependencies=[
+        Depends(
+            require_permission(
+                "settings.auth_manage"
+            )
+        )
+    ],
+)
+def test_ldap_user(
+    payload: LDAPTestUserRequest,
+):
+    username = payload.username.strip()
+
+    if not username:
+        raise HTTPException(
+            400,
+            "Username is required.",
+        )
+
+    try:
+        user = authenticate_ldap_user(
+            username,
+            payload.password,
+        )
+
+    except RuntimeError as exc:
+        raise HTTPException(
+            400,
+            str(exc),
+        )
+
+    if user is None:
+        raise HTTPException(
+            401,
+            "User was not found or the password is incorrect.",
+        )
+
+    return {
+        "ok": True,
+        "message": "LDAP user authentication successful.",
+        "user": user,
+    }
 
 
 @app.get("/api/v1/settings/packs", dependencies=[Depends(require_permission("settings.view"))])
