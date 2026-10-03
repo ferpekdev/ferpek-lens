@@ -1,3 +1,4 @@
+import json
 """
 FERPEK Server
 
@@ -287,6 +288,20 @@ def init_db():
                     ON DELETE CASCADE,
                 FOREIGN KEY(permission_id)
                     REFERENCES permissions(id)
+                    ON DELETE CASCADE
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS directory_user_groups (
+                user_id INTEGER NOT NULL,
+                group_id INTEGER NOT NULL,
+                PRIMARY KEY(user_id, group_id),
+                FOREIGN KEY(user_id)
+                    REFERENCES users(id)
+                    ON DELETE CASCADE,
+                FOREIGN KEY(group_id)
+                    REFERENCES groups(id)
                     ON DELETE CASCADE
             )
         """)
@@ -969,6 +984,11 @@ class UserUpdate(BaseModel):
 class LDAPSettings(BaseModel):
     enabled: bool = False
 
+    provider_type: str = Field(
+        default="ldap",
+        pattern=r"^(ldap|active_directory)$",
+    )
+
     host: str = Field(
         default="",
         max_length=255,
@@ -1016,6 +1036,10 @@ class LDAPSettings(BaseModel):
         default="uid",
         min_length=1,
         max_length=128,
+    )
+
+    group_mappings: dict[str, int] = Field(
+        default_factory=dict,
     )
 
 
@@ -1365,6 +1389,17 @@ def login(
     # -----------------------------------------------------
 
     else:
+        provider_type = get_setting_text(
+            "ldap_provider_type",
+            "ldap",
+        ).strip()
+
+        directory_auth_type = (
+            "active_directory"
+            if provider_type == "active_directory"
+            else "ldap"
+        )
+
         if not get_setting_bool(
             "ldap_enabled",
             False,
@@ -1378,7 +1413,7 @@ def login(
         # by a FERPEK administrator.
         if (
             user is not None
-            and user["auth_type"] == "ldap"
+            and user["auth_type"] == directory_auth_type
             and not bool(user["enabled"])
         ):
             raise HTTPException(
@@ -1392,7 +1427,7 @@ def login(
             user is not None
             and user["auth_type"] not in {
                 "local",
-                "ldap",
+                directory_auth_type,
             }
         ):
             raise HTTPException(
@@ -1437,6 +1472,11 @@ def login(
 
         email = ldap_user["email"].strip()
 
+        directory_groups = ldap_user.get(
+            "groups",
+            [],
+        )
+
         with db() as conn:
             user = conn.execute(
                 """
@@ -1462,7 +1502,7 @@ def login(
                 if canonical_user is not None:
                     # Never overwrite an existing local or
                     # different-provider account.
-                    if canonical_user["auth_type"] != "ldap":
+                    if canonical_user["auth_type"] != directory_auth_type:
                         raise HTTPException(
                             401,
                             "Invalid username or password",
@@ -1484,12 +1524,13 @@ def login(
                             created_at,
                             updated_at
                         )
-                    VALUES (?, ?, ?, 'ldap', NULL, 1, ?, ?)
+                    VALUES (?, ?, ?, ?, NULL, 1, ?, ?)
                     """,
                     (
                         ldap_username,
                         display_name,
                         email,
+                        directory_auth_type,
                         now,
                         now,
                     ),
@@ -1498,7 +1539,7 @@ def login(
                 user_id = cursor.lastrowid
 
             else:
-                if user["auth_type"] != "ldap":
+                if user["auth_type"] != directory_auth_type:
                     raise HTTPException(
                         401,
                         "Invalid username or password",
@@ -1529,6 +1570,12 @@ def login(
                         user_id,
                     ),
                 )
+
+            sync_directory_user_groups(
+                conn,
+                user_id,
+                directory_groups,
+            )
 
             user = conn.execute(
                 """
@@ -2070,27 +2117,37 @@ def update_user(
                 "User not found",
             )
 
-        if user["auth_type"] != "local":
+        is_local_user = user["auth_type"] == "local"
+
+        if not is_local_user and any(
+            value is not None
+            for value in (
+                payload.username,
+                payload.display_name,
+                payload.email,
+                payload.password,
+            )
+        ):
             raise HTTPException(
                 400,
-                "Directory users cannot be edited as local users",
+                "Directory identity fields cannot be edited locally",
             )
 
         username = (
             payload.username.strip().lower()
-            if payload.username is not None
+            if is_local_user and payload.username is not None
             else user["username"]
         )
 
         display_name = (
             payload.display_name.strip()
-            if payload.display_name is not None
+            if is_local_user and payload.display_name is not None
             else user["display_name"]
         )
 
         email = (
             payload.email.strip()
-            if payload.email is not None
+            if is_local_user and payload.email is not None
             else user["email"]
         )
 
@@ -2220,7 +2277,10 @@ def update_user(
                 )
 
         password_hash = user["password_hash"]
-        password_changed = payload.password is not None
+        password_changed = (
+            is_local_user
+            and payload.password is not None
+        )
 
         if password_changed:
             password_hash = hash_local_password(
@@ -3362,6 +3422,29 @@ def update_agent_source(
     return {"ok": True}
 
 
+def get_directory_available_groups():
+    with db() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                id,
+                name,
+                builtin
+            FROM groups
+            ORDER BY name COLLATE NOCASE
+            """
+        ).fetchall()
+
+    return [
+        {
+            "id": int(row["id"]),
+            "name": row["name"],
+            "builtin": bool(row["builtin"]),
+        }
+        for row in rows
+    ]
+
+
 @app.get(
     "/api/v1/settings/authentication/ldap",
     dependencies=[
@@ -3378,10 +3461,31 @@ def get_ldap_settings():
         "",
     )
 
+    provider_type = get_setting_text(
+        "ldap_provider_type",
+        "ldap",
+    )
+
+    default_user_filter = (
+        "(|(sAMAccountName={username})(userPrincipalName={username}))"
+        if provider_type == "active_directory"
+        else "(uid={username})"
+    )
+
+    default_username_attribute = (
+        "sAMAccountName"
+        if provider_type == "active_directory"
+        else "uid"
+    )
+
     return {
         "enabled": get_setting_bool(
             "ldap_enabled",
             False,
+        ),
+        "provider_type": get_setting_text(
+            "ldap_provider_type",
+            "ldap",
         ),
         "host": get_setting_text(
             "ldap_host",
@@ -3412,12 +3516,19 @@ def get_ldap_settings():
         ),
         "user_filter": get_setting_text(
             "ldap_user_filter",
-            "(uid={username})",
+            default_user_filter,
         ),
         "username_attribute": get_setting_text(
             "ldap_username_attribute",
-            "uid",
+            default_username_attribute,
         ),
+        "group_mappings": json.loads(
+            get_setting_text(
+                "ldap_group_mappings",
+                "{}",
+            )
+        ),
+        "available_groups": get_directory_available_groups(),
     }
 
 
@@ -3476,12 +3587,46 @@ def update_ldap_settings(
                 "LDAP username attribute is required",
             )
 
+    group_mappings = {
+        str(directory_group).strip(): int(group_id)
+        for directory_group, group_id
+        in settings.group_mappings.items()
+        if str(directory_group).strip()
+    }
+
+    with db() as conn:
+        if group_mappings:
+            group_ids = sorted(set(group_mappings.values()))
+
+            placeholders = ",".join(
+                "?" for _ in group_ids
+            )
+
+            valid_group_ids = {
+                int(row["id"])
+                for row in conn.execute(
+                    f"""
+                    SELECT id
+                    FROM groups
+                    WHERE id IN ({placeholders})
+                    """,
+                    group_ids,
+                ).fetchall()
+            }
+
+            if valid_group_ids != set(group_ids):
+                raise HTTPException(
+                    400,
+                    "One or more FERPEK groups do not exist",
+                )
+
     now = int(time.time())
 
     values = {
         "ldap_enabled": (
             "1" if settings.enabled else "0"
         ),
+        "ldap_provider_type": settings.provider_type,
         "ldap_host": host,
         "ldap_port": str(settings.port),
         "ldap_security": settings.security,
@@ -3490,6 +3635,11 @@ def update_ldap_settings(
         "ldap_user_search_base": user_search_base,
         "ldap_user_filter": user_filter,
         "ldap_username_attribute": username_attribute,
+        "ldap_group_mappings": json.dumps(
+            group_mappings,
+            separators=(",", ":"),
+            sort_keys=True,
+        ),
     }
 
     with db() as conn:
@@ -3764,6 +3914,154 @@ def test_ldap_connection(
             pass
 
 
+def sync_directory_user_groups(
+    conn: sqlite3.Connection,
+    user_id: int,
+    directory_group_dns: list[str],
+):
+    provider_type = get_setting_text(
+        "ldap_provider_type",
+        "ldap",
+    ).strip()
+
+    if provider_type != "active_directory":
+        return
+
+    try:
+        raw_mappings = json.loads(
+            get_setting_text(
+                "ldap_group_mappings",
+                "{}",
+            )
+        )
+    except (TypeError, ValueError):
+        raw_mappings = {}
+
+    if not isinstance(raw_mappings, dict):
+        raw_mappings = {}
+
+    normalized_memberships = {
+        str(group_dn).strip().casefold()
+        for group_dn in directory_group_dns
+        if str(group_dn).strip()
+    }
+
+    desired_group_ids = set()
+
+    for directory_group, group_id in raw_mappings.items():
+        directory_group = str(
+            directory_group
+        ).strip()
+
+        if not directory_group:
+            continue
+
+        if (
+            directory_group.casefold()
+            not in normalized_memberships
+        ):
+            continue
+
+        try:
+            desired_group_ids.add(int(group_id))
+        except (TypeError, ValueError):
+            continue
+
+    # Do not trust stale/deleted FERPEK group IDs.
+    if desired_group_ids:
+        placeholders = ",".join(
+            "?" for _ in desired_group_ids
+        )
+
+        valid_group_ids = {
+            int(row["id"])
+            for row in conn.execute(
+                f"""
+                SELECT id
+                FROM groups
+                WHERE id IN ({placeholders})
+                """,
+                tuple(sorted(desired_group_ids)),
+            ).fetchall()
+        }
+
+        desired_group_ids &= valid_group_ids
+
+    current_directory_group_ids = {
+        int(row["group_id"])
+        for row in conn.execute(
+            """
+            SELECT group_id
+            FROM directory_user_groups
+            WHERE user_id = ?
+            """,
+            (user_id,),
+        ).fetchall()
+    }
+
+    groups_to_remove = (
+        current_directory_group_ids
+        - desired_group_ids
+    )
+
+    groups_to_add = (
+        desired_group_ids
+        - current_directory_group_ids
+    )
+
+    # Remove memberships that were previously managed by AD.
+    for group_id in sorted(groups_to_remove):
+        conn.execute(
+            """
+            DELETE FROM directory_user_groups
+            WHERE user_id = ?
+              AND group_id = ?
+            """,
+            (
+                user_id,
+                group_id,
+            ),
+        )
+
+        conn.execute(
+            """
+            DELETE FROM user_groups
+            WHERE user_id = ?
+              AND group_id = ?
+            """,
+            (
+                user_id,
+                group_id,
+            ),
+        )
+
+    # Add memberships currently provided by AD.
+    for group_id in sorted(groups_to_add):
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO user_groups
+                (user_id, group_id)
+            VALUES (?, ?)
+            """,
+            (
+                user_id,
+                group_id,
+            ),
+        )
+
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO directory_user_groups
+                (user_id, group_id)
+            VALUES (?, ?)
+            """,
+            (
+                user_id,
+                group_id,
+            ),
+        )
+
+
 def authenticate_ldap_user(
     username: str,
     password: str,
@@ -3798,14 +4096,46 @@ def authenticate_ldap_user(
         "",
     ).strip() or base_dn
 
+    provider_type = get_setting_text(
+        "ldap_provider_type",
+        "ldap",
+    ).strip()
+
+    default_user_filter = (
+        "(|(sAMAccountName={username})(userPrincipalName={username}))"
+        if provider_type == "active_directory"
+        else "(uid={username})"
+    )
+
+    default_username_attribute = (
+        "sAMAccountName"
+        if provider_type == "active_directory"
+        else "uid"
+    )
+
+    display_name_attribute = (
+        "displayName"
+        if provider_type == "active_directory"
+        else "cn"
+    )
+
+    search_attributes = [
+        username_attribute,
+        display_name_attribute,
+        "mail",
+    ]
+
+    if provider_type == "active_directory":
+        search_attributes.append("memberOf")
+
     user_filter = get_setting_text(
         "ldap_user_filter",
-        "(uid={username})",
+        default_user_filter,
     ).strip()
 
     username_attribute = get_setting_text(
         "ldap_username_attribute",
-        "uid",
+        default_username_attribute,
     ).strip()
 
     encrypted_bind_password = get_setting_text(
@@ -3898,11 +4228,7 @@ def authenticate_ldap_user(
             search_base=user_search_base,
             search_filter=search_filter,
             search_scope=SUBTREE,
-            attributes=[
-                username_attribute,
-                "cn",
-                "mail",
-            ],
+            attributes=search_attributes,
             size_limit=2,
         )
 
@@ -3932,17 +4258,38 @@ def authenticate_ldap_user(
             except Exception:
                 return ""
 
+        def attribute_values(name: str) -> list[str]:
+            try:
+                values = entry[name].values
+
+                if not values:
+                    return []
+
+                return [
+                    str(value)
+                    for value in values
+                    if value is not None
+                ]
+            except Exception:
+                return []
+
         resolved_username = (
             attribute_value(username_attribute)
             or username.strip()
         )
 
         display_name = (
-            attribute_value("cn")
+            attribute_value(display_name_attribute)
             or resolved_username
         )
 
         email = attribute_value("mail")
+
+        directory_groups = (
+            attribute_values("memberOf")
+            if provider_type == "active_directory"
+            else []
+        )
 
     except LDAPException as exc:
         print(
@@ -3999,6 +4346,7 @@ def authenticate_ldap_user(
         "display_name": display_name,
         "email": email,
         "dn": user_dn,
+        "groups": directory_groups,
     }
 
 
@@ -4255,7 +4603,11 @@ def post_relevant_events(
 def list_relevant_events(
     agent_id: Optional[int] = None,
     source: Optional[str] = None,
+    service: Optional[str] = None,
+    severity: Optional[str] = None,
     search: Optional[str] = None,
+    since: Optional[int] = None,
+    until: Optional[int] = None,
     limit: int = Query(default=100, ge=1, le=500),
 ):
     query = """
@@ -4278,16 +4630,34 @@ def list_relevant_events(
         query += " AND relevant_events.source_key = ?"
         params.append(source)
 
+    if service:
+        query += " AND LOWER(relevant_events.service) = LOWER(?)"
+        params.append(service)
+
+    if severity:
+        query += " AND LOWER(relevant_events.severity) = LOWER(?)"
+        params.append(severity)
+
+    if since is not None:
+        query += " AND relevant_events.event_time >= ?"
+        params.append(since)
+
+    if until is not None:
+        query += " AND relevant_events.event_time <= ?"
+        params.append(until)
+
     if search:
         query += """
             AND (
                 relevant_events.title LIKE ?
                 OR relevant_events.detail LIKE ?
                 OR relevant_events.source_message LIKE ?
+                OR agents.hostname LIKE ?
             )
         """
         search_value = f"%{search}%"
         params.extend([
+            search_value,
             search_value,
             search_value,
             search_value,

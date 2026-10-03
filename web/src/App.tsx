@@ -13,6 +13,127 @@ import { createPortal } from 'react-dom'
 
 type Status = 'healthy' | 'warning' | 'critical' | 'unknown'
 
+type ToastType = 'info' | 'success' | 'error'
+
+type ToastEventDetail = {
+  message: string
+  type: ToastType
+  duration?: number
+}
+
+function showToast(
+  message: string,
+  type: ToastType = 'info',
+  duration = 3500,
+) {
+  window.dispatchEvent(
+    new CustomEvent<ToastEventDetail>('ferpek-toast', {
+      detail: {
+        message,
+        type,
+        duration,
+      },
+    }),
+  )
+}
+
+function GlobalToasts() {
+  const [toasts, setToasts] = useState<
+    Array<{
+      id: number
+      message: string
+      type: ToastType
+    }>
+  >([])
+
+  const nextId = useRef(1)
+
+  useEffect(() => {
+    function handleToast(event: Event) {
+      const customEvent =
+        event as CustomEvent<ToastEventDetail>
+
+      const {
+        message,
+        type = 'info',
+        duration = 3500,
+      } = customEvent.detail
+
+      const id = nextId.current++
+
+      setToasts((current) => [
+        ...current.slice(-2),
+        {
+          id,
+          message,
+          type,
+        },
+      ])
+
+      window.setTimeout(() => {
+        setToasts((current) =>
+          current.filter((toast) => toast.id !== id),
+        )
+      }, duration)
+    }
+
+    window.addEventListener(
+      'ferpek-toast',
+      handleToast,
+    )
+
+    return () => {
+      window.removeEventListener(
+        'ferpek-toast',
+        handleToast,
+      )
+    }
+  }, [])
+
+  if (toasts.length === 0) {
+    return null
+  }
+
+  return createPortal(
+    <div
+      className="global-toast-stack"
+      aria-live="polite"
+      aria-atomic="false"
+    >
+      {toasts.map((toast) => (
+        <div
+          key={toast.id}
+          className={`global-toast ${toast.type}`}
+        >
+          <div className="global-toast-content">
+            <span className="global-toast-indicator" />
+
+            <span>{toast.message}</span>
+          </div>
+
+          <button
+            type="button"
+            className="global-toast-close"
+            aria-label="Dismiss notification"
+            onClick={() =>
+              setToasts((current) =>
+                current.filter(
+                  (candidate) =>
+                    candidate.id !== toast.id,
+                ),
+              )
+            }
+          >
+            ×
+          </button>
+        </div>
+      ))}
+    </div>,
+    document.body,
+  )
+}
+
+
 type CurrentUser = {
   id: number
   username: string
@@ -391,6 +512,9 @@ function Sidebar({
   const [accountMenuOpen, setAccountMenuOpen] =
     useState(false)
 
+  const accountMenuRef = useRef<HTMLDivElement>(null)
+  const location = useLocation()
+
   const [passwordModalOpen, setPasswordModalOpen] =
     useState(false)
   const [currentPassword, setCurrentPassword] =
@@ -405,6 +529,28 @@ function Sidebar({
     useState('')
   const [passwordMessage, setPasswordMessage] =
     useState('')
+
+  useEffect(() => {
+    setAccountMenuOpen(false)
+  }, [location.pathname])
+
+  useEffect(() => {
+    function handleOutsideClick(event: MouseEvent) {
+      if (
+        accountMenuOpen &&
+        accountMenuRef.current &&
+        !accountMenuRef.current.contains(event.target as Node)
+      ) {
+        setAccountMenuOpen(false)
+      }
+    }
+
+    document.addEventListener('mousedown', handleOutsideClick)
+
+    return () => {
+      document.removeEventListener('mousedown', handleOutsideClick)
+    }
+  }, [accountMenuOpen])
 
   useEffect(() => {
     fetch("/health")
@@ -672,7 +818,10 @@ function Sidebar({
       </nav>
 
       <div className="sidebar-bottom">
-        <div className="sidebar-account">
+        <div
+          className="sidebar-account"
+          ref={accountMenuRef}
+        >
           <button
             type="button"
             className={
@@ -716,7 +865,17 @@ function Sidebar({
                   type="button"
                   onClick={openPasswordModal}
                 >
-                  <span>⌘</span>
+                  <span className="sidebar-account-icon">
+                    <svg
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M17 9h-1V7a4 4 0 0 0-8 0v2H7a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-8a2 2 0 0 0-2-2Zm-7-2a2 2 0 0 1 4 0v2h-4V7Zm3 9.73V18h-2v-1.27a2 2 0 1 1 2 0Z"
+                        fill="currentColor"
+                      />
+                    </svg>
+                  </span>
                   Change password
                 </button>
               )}
@@ -725,7 +884,17 @@ function Sidebar({
                 type="button"
                 onClick={() => void handleLogout()}
               >
-                <span>↪</span>
+                <span className="sidebar-account-icon">
+                  <svg
+                    viewBox="0 0 24 24"
+                    aria-hidden="true"
+                  >
+                    <path
+                      d="M13 5h-2V3h8v18h-8v-2h6V5h-4Zm-2.6 3.4L9 7l-5 5 5 5 1.4-1.4L7.8 13H15v-2H7.8l2.6-2.6Z"
+                      fill="currentColor"
+                    />
+                  </svg>
+                </span>
                 Sign out
               </button>
             </div>
@@ -1073,10 +1242,10 @@ function Overview({
           </div>
 
           <NavLink
-            className="secondary-button compact-button"
+            className="text-button"
             to="/findings"
           >
-            View findings
+            View findings →
           </NavLink>
         </div>
 
@@ -1088,7 +1257,7 @@ function Overview({
               </div>
             </div>
           ) : (
-            apiFindings.slice(0, 5).map((finding) => (
+            apiFindings.slice(0, 3).map((finding) => (
               <article className="finding" key={finding.id}>
                 <div className="finding-status">
                   <StatusDiamond
@@ -1272,6 +1441,7 @@ function Systems({
   }
 
   const [agents, setAgents] = useState<Agent[]>([])
+  const [hostSearch, setHostSearch] = useState('')
   const [showAddHost, setShowAddHost] = useState(false)
   const [enrollmentToken, setEnrollmentToken] = useState('')
   const [expiresIn, setExpiresIn] = useState(0)
@@ -1608,39 +1778,82 @@ function Systems({
     setError('')
   }
 
+  const normalizedHostSearch =
+    hostSearch.trim().toLowerCase()
+
+  const visibleAgents =
+    normalizedHostSearch === ''
+      ? agents
+      : agents.filter((agent) => {
+          const haystack = [
+            agent.hostname,
+            agent.os_name ?? '',
+            agent.os_version ?? '',
+            agent.machine_type ?? '',
+            agent.agent_version ?? '',
+          ]
+            .join(' ')
+            .toLowerCase()
+
+          return haystack.includes(
+            normalizedHostSearch,
+          )
+        })
+
   return (
     <section>
-      <div className="section-heading">
+      <div className="section-heading hosts-heading">
         <div>
           <h2>
             Monitored hosts: {agents.length}
           </h2>
-          <p>Physical machines and virtual machines monitored by FERPEK</p>
+
+          <p>
+            Physical machines and virtual machines monitored by FERPEK
+          </p>
         </div>
 
-        {hasPermission(
-          currentUser,
-          'hosts.manage',
-        ) && (
-          <button
-            className="primary-button"
-            onClick={createEnrollment}
-          >
-            + Add host
-          </button>
-        )}
+        <div className="hosts-toolbar">
+          <input
+            className="hosts-search"
+            type="search"
+            placeholder="Search hosts..."
+            value={hostSearch}
+            onChange={(event) =>
+              setHostSearch(event.target.value)
+            }
+            aria-label="Search hosts"
+          />
+
+          {hasPermission(
+            currentUser,
+            'hosts.manage',
+          ) && (
+            <button
+              className="primary-button action-button"
+              onClick={createEnrollment}
+            >
+              + Add host
+            </button>
+          )}
+        </div>
       </div>
 
-      <div className="panel">
+      <div className="hosts-flat-list">
         {agents.length === 0 ? (
           <div className="empty-state">
             No hosts have been enrolled yet.
           </div>
+        ) : visibleAgents.length === 0 ? (
+          <div className="empty-state">
+            No hosts match your search.
+          </div>
         ) : (
-          agents.map((agent) => (
-            <div className="system-row large-row" key={agent.id}>
-              <StatusDiamond status={agentStatus(agent)} />
-
+          visibleAgents.map((agent) => (
+            <div
+              className={`system-row large-row host-status-${agentStatus(agent)}`}
+              key={agent.id}
+            >
               <div className="system-info">
                 <div className="host-title-line">
                   <strong>{agent.hostname}</strong>
@@ -1770,7 +1983,6 @@ function Systems({
 
             {sourcesLoading && (
               <div className="enrollment-state">
-                <StatusDiamond status="unknown" />
                 Loading log sources...
               </div>
             )}
@@ -2263,6 +2475,7 @@ function HostDetail({
   const [activeTab, setActiveTab] = useState<HostTab>('overview')
   const [logMode, setLogMode] = useState<LogMode>('relevant')
   const [selectedSource, setSelectedSource] = useState<string>('all')
+  const [sourceMenuOpen, setSourceMenuOpen] = useState(false)
 
   const [loading, setLoading] = useState(true)
 
@@ -2520,7 +2733,6 @@ function HostDetail({
       <div className="host-detail-header">
         <div className="host-identity">
           <div className="host-title-line">
-            <StatusDiamond status={online ? 'healthy' : 'unknown'} />
             <h2>{agent.hostname}</h2>
           </div>
 
@@ -2588,14 +2800,9 @@ function HostDetail({
           <div className="panel">
             <div className="panel-header">
               <div>
-                <h2>Host status</h2>
-                <p>Current monitoring state</p>
+                <h2>System</h2>
+                <p>Host information</p>
               </div>
-            </div>
-
-            <div className="host-property">
-              <span>Status</span>
-              <strong>{online ? 'Online' : 'Offline'}</strong>
             </div>
 
             <div className="host-property">
@@ -2604,13 +2811,22 @@ function HostDetail({
             </div>
 
             <div className="host-property">
+              <span>Machine</span>
+              <strong>{agent.machine_type || 'Unknown'}</strong>
+            </div>
+
+            <div className="host-property">
               <span>Agent</span>
               <strong>{agent.agent_version || 'Unknown'}</strong>
             </div>
 
             <div className="host-property">
-              <span>Machine</span>
-              <strong>{agent.machine_type || 'Unknown'}</strong>
+              <span>Last check-in</span>
+              <strong>
+                {agent.last_seen
+                  ? formatAge(agent.last_seen)
+                  : 'Never'}
+              </strong>
             </div>
           </div>
 
@@ -2623,13 +2839,23 @@ function HostDetail({
             </div>
 
             <div className="host-property">
-              <span>Open findings</span>
-              <strong>{openFindings.length}</strong>
+              <span>Monitor</span>
+              <strong>
+                {hostSources.some((source) => source.enabled)
+                  ? 'Enabled'
+                  : 'Disabled'}
+              </strong>
             </div>
 
             <div className="host-property">
-              <span>Enabled sources</span>
-              <strong>{hostSources.length}</strong>
+              <span>Log Explorer</span>
+              <strong>
+                {hostSources.some(
+                  (source) => source.enabled && source.send_events,
+                )
+                  ? 'Enabled'
+                  : 'Disabled'}
+              </strong>
             </div>
 
             <div className="host-property">
@@ -2664,35 +2890,82 @@ function HostDetail({
             <div className="finding-filter-group">
               <span className="finding-filter-label">Source</span>
 
-              <select
-                className="host-source-select"
-                value={selectedSource}
-                onChange={(event) =>
-                  setSelectedSource(event.target.value)
-                }
-              >
-                <option value="all">All sources</option>
+              <div className="host-source-dropdown">
+                <button
+                  type="button"
+                  className={`host-source-trigger ${
+                    sourceMenuOpen ? 'open' : ''
+                  }`}
+                  onClick={() =>
+                    setSourceMenuOpen((open) => !open)
+                  }
+                  aria-haspopup="listbox"
+                  aria-expanded={sourceMenuOpen}
+                >
+                  <span>
+                    {selectedSource === 'all'
+                      ? 'All sources'
+                      : sources.find(
+                          (source) =>
+                            source.source_key === selectedSource,
+                        )?.name ?? selectedSource}
+                  </span>
 
-                {sources
-                  .filter((source) => source.send_events)
-                  .map((source) => (
-                    <option
-                      key={source.source_key}
-                      value={source.source_key}
+                  <span className="host-source-chevron">
+                    {sourceMenuOpen ? '⌃' : '⌄'}
+                  </span>
+                </button>
+
+                {sourceMenuOpen && (
+                  <div
+                    className="host-source-menu"
+                    role="listbox"
+                  >
+                    <button
+                      type="button"
+                      className={`host-source-option ${
+                        selectedSource === 'all'
+                          ? 'selected'
+                          : ''
+                      }`}
+                      onClick={() => {
+                        setSelectedSource('all')
+                        setSourceMenuOpen(false)
+                      }}
                     >
-                      {source.name}
-                    </option>
-                  ))}
-              </select>
+                      All sources
+                    </button>
+
+                    {sources
+                      .filter((source) => source.send_events)
+                      .map((source) => (
+                        <button
+                          type="button"
+                          key={source.source_key}
+                          className={`host-source-option ${
+                            selectedSource === source.source_key
+                              ? 'selected'
+                              : ''
+                          }`}
+                          onClick={() => {
+                            setSelectedSource(source.source_key)
+                            setSourceMenuOpen(false)
+                          }}
+                        >
+                          {source.name}
+                        </button>
+                      ))}
+                  </div>
+                )}
+              </div>
             </div>
 
             <span className="live-indicator">
-              <StatusDiamond status="healthy" />
               Live
             </span>
           </div>
 
-          <div className="panel host-log-panel">
+          <div className="host-log-panel">
             {logMode === 'relevant' ? (
               relevantEvents.length === 0 ? (
                 <div className="empty-state">
@@ -2704,10 +2977,6 @@ function HostDetail({
                     className="host-log-row"
                     key={relevant.id}
                   >
-                    <StatusDiamond
-                      status={findingStatus(relevant.severity)}
-                    />
-
                     <div className="host-log-content">
                       <strong>{relevant.title}</strong>
 
@@ -2736,8 +3005,6 @@ function HostDetail({
                   className="host-log-row raw"
                   key={event.id}
                 >
-                  <StatusDiamond status="unknown" />
-
                   <div className="host-log-content">
                     <code>{event.message}</code>
 
@@ -2758,27 +3025,21 @@ function HostDetail({
       )}
 
       {activeTab === 'findings' && (
-        <div className="findings-list">
+        <div className="host-findings-list">
           {findings.length === 0 ? (
-            <div className="panel">
-              <div className="empty-state">
-                No findings for this host.
-              </div>
+            <div className="host-findings-empty">
+              No findings for this host.
             </div>
           ) : (
             findings.map((finding) => (
               <article
-                className="finding"
+                className={`host-finding-row ${findingStatus(
+                  finding.severity,
+                )}`}
                 key={finding.id}
               >
-                <div className="finding-status">
-                  <StatusDiamond
-                    status={findingStatus(finding.severity)}
-                  />
-                </div>
-
-                <div className="finding-main">
-                  <div className="finding-meta">
+                <div className="host-finding-main">
+                  <div className="host-finding-meta">
                     <span
                       className={`severity ${findingStatus(
                         finding.severity,
@@ -2788,17 +3049,20 @@ function HostDetail({
                     </span>
 
                     <span>{finding.service}</span>
-                    <span className="separator">/</span>
+                    <span className="separator">·</span>
                     <span>{finding.status}</span>
                   </div>
 
                   <h3>{finding.title}</h3>
-                  <p>{finding.detail}</p>
+
+                  {finding.detail && (
+                    <p>{finding.detail}</p>
+                  )}
                 </div>
 
-                <div className="finding-side">
-                  <span>{formatAge(finding.received_at)}</span>
-                </div>
+                <time>
+                  {formatAge(finding.received_at)}
+                </time>
               </article>
             ))
           )}
@@ -3058,9 +3322,9 @@ function HostDetail({
               >
                 {savingSources ? 'Saving...' : 'Save changes'}
               </button>
-            </div>
-          )}
-        </div>
+              </div>
+            )}
+          </div>
       )}
 
     </section>
@@ -3289,10 +3553,8 @@ function Findings({
 
       <div className="finding-groups">
         {findingGroups.length === 0 ? (
-          <div className="panel">
-            <div className="empty-state">
-              No findings detected.
-            </div>
+          <div className="findings-empty-state">
+            No findings detected.
           </div>
         ) : (
           findingGroups.map((group) => {
@@ -3301,14 +3563,10 @@ function Findings({
 
             return (
               <article
-                className="panel finding-group"
+                className={`finding-group ${group.severity}`}
                 key={group.patternId}
               >
                 <div className="finding-group-header">
-                  <StatusDiamond
-                    status={group.severity}
-                  />
-
                   <div className="finding-group-heading">
                     <div className="finding-group-title">
                       <h3>
@@ -3459,10 +3717,108 @@ function Findings({
 
 function Activity() {
   const [events, setEvents] = useState<ApiRelevantEvent[]>([])
+  const [filterEvents, setFilterEvents] = useState<ApiRelevantEvent[]>([])
+
+  const [search, setSearch] = useState('')
+  const [hostFilter, setHostFilter] = useState('all')
+  const [serviceFilter, setServiceFilter] = useState('all')
+  const [severityFilter, setSeverityFilter] = useState('all')
+  const [rangeFilter, setRangeFilter] = useState('24h')
+
+  const [customFrom, setCustomFrom] = useState('')
+  const [customTo, setCustomTo] = useState('')
+
+  async function loadFilterOptions() {
+    try {
+      const response = await fetch(
+        '/api/v1/relevant?limit=500',
+      )
+
+      if (!response.ok) {
+        throw new Error(`Server returned ${response.status}`)
+      }
+
+      setFilterEvents(await response.json())
+    } catch (err) {
+      console.error(
+        'Could not load activity filter options:',
+        err,
+      )
+    }
+  }
 
   async function loadEvents() {
     try {
-      const response = await fetch('/api/v1/relevant?limit=100')
+      const params = new URLSearchParams()
+
+      params.set('limit', '500')
+
+      if (hostFilter !== 'all') {
+        params.set('agent_id', hostFilter)
+      }
+
+      if (serviceFilter !== 'all') {
+        params.set('service', serviceFilter)
+      }
+
+      if (severityFilter !== 'all') {
+        params.set('severity', severityFilter)
+      }
+
+      if (search.trim()) {
+        params.set('search', search.trim())
+      }
+
+      const now = Math.floor(Date.now() / 1000)
+
+      if (rangeFilter === '1h') {
+        params.set(
+          'since',
+          String(now - 60 * 60),
+        )
+      }
+
+      if (rangeFilter === '24h') {
+        params.set(
+          'since',
+          String(now - 24 * 60 * 60),
+        )
+      }
+
+      if (rangeFilter === '7d') {
+        params.set(
+          'since',
+          String(now - 7 * 24 * 60 * 60),
+        )
+      }
+
+      if (rangeFilter === 'custom') {
+        if (customFrom) {
+          params.set(
+            'since',
+            String(
+              Math.floor(
+                new Date(customFrom).getTime() / 1000,
+              ),
+            ),
+          )
+        }
+
+        if (customTo) {
+          params.set(
+            'until',
+            String(
+              Math.floor(
+                new Date(customTo).getTime() / 1000,
+              ),
+            ),
+          )
+        }
+      }
+
+      const response = await fetch(
+        `/api/v1/relevant?${params.toString()}`,
+      )
 
       if (!response.ok) {
         throw new Error(`Server returned ${response.status}`)
@@ -3475,51 +3831,220 @@ function Activity() {
   }
 
   useEffect(() => {
-    loadEvents()
+    void loadFilterOptions()
 
-    const timer = window.setInterval(loadEvents, 5000)
+    const timer = window.setInterval(
+      () => void loadFilterOptions(),
+      30000,
+    )
+
     return () => window.clearInterval(timer)
   }, [])
 
+  useEffect(() => {
+    void loadEvents()
+
+    const timer = window.setInterval(
+      () => void loadEvents(),
+      5000,
+    )
+
+    return () => window.clearInterval(timer)
+  }, [
+    hostFilter,
+    serviceFilter,
+    severityFilter,
+    rangeFilter,
+    customFrom,
+    customTo,
+    search,
+  ])
+
+  const hosts = Array.from(
+    new Map(
+      filterEvents.map((event) => [
+        event.agent_id,
+        {
+          id: event.agent_id,
+          hostname: event.hostname,
+        },
+      ]),
+    ).values(),
+  ).sort((a, b) =>
+    a.hostname.localeCompare(b.hostname),
+  )
+
+  const services = Array.from(
+    new Set(
+      filterEvents
+        .map((event) => event.service)
+        .filter(Boolean),
+    ),
+  ).sort((a, b) =>
+    a.localeCompare(b),
+  )
+
   return (
-    <section>
-      <div className="section-heading">
+    <section className="activity-page">
+      <div className="section-heading activity-heading">
         <div>
-          <h2>Recent activity</h2>
-          <p>Relevant events detected across monitored hosts</p>
+          <h2>Activity</h2>
+          <p>
+            Relevant events across monitored infrastructure
+          </p>
         </div>
       </div>
 
-      <div className="panel">
+      <div className="activity-toolbar">
+        <input
+          className="activity-search"
+          type="search"
+          placeholder="Search activity..."
+          value={search}
+          onChange={(event) =>
+            setSearch(event.target.value)
+          }
+        />
+
+        <select
+          className="activity-filter"
+          value={hostFilter}
+          onChange={(event) =>
+            setHostFilter(event.target.value)
+          }
+        >
+          <option value="all">All hosts</option>
+
+          {hosts.map((host) => (
+            <option
+              key={host.id}
+              value={String(host.id)}
+            >
+              {host.hostname}
+            </option>
+          ))}
+        </select>
+
+        <select
+          className="activity-filter"
+          value={serviceFilter}
+          onChange={(event) =>
+            setServiceFilter(event.target.value)
+          }
+        >
+          <option value="all">All services</option>
+
+          {services.map((service) => (
+            <option
+              key={service}
+              value={service}
+            >
+              {service}
+            </option>
+          ))}
+        </select>
+
+        <select
+          className="activity-filter"
+          value={severityFilter}
+          onChange={(event) =>
+            setSeverityFilter(event.target.value)
+          }
+        >
+          <option value="all">All severities</option>
+          <option value="critical">Critical</option>
+          <option value="warning">Warning</option>
+          <option value="info">Info</option>
+        </select>
+
+        <select
+          className="activity-filter activity-range"
+          value={rangeFilter}
+          onChange={(event) =>
+            setRangeFilter(event.target.value)
+          }
+        >
+          <option value="1h">Last hour</option>
+          <option value="24h">Last 24 hours</option>
+          <option value="7d">Last 7 days</option>
+          <option value="all">All retained</option>
+          <option value="custom">Custom range</option>
+        </select>
+      </div>
+
+      {rangeFilter === 'custom' && (
+        <div className="activity-custom-range">
+          <label>
+            <span>From</span>
+            <input
+              type="datetime-local"
+              value={customFrom}
+              onChange={(event) =>
+                setCustomFrom(event.target.value)
+              }
+            />
+          </label>
+
+          <label>
+            <span>To</span>
+            <input
+              type="datetime-local"
+              value={customTo}
+              onChange={(event) =>
+                setCustomTo(event.target.value)
+              }
+            />
+          </label>
+        </div>
+      )}
+
+      <div className="activity-list">
         {events.length === 0 ? (
-          <div className="empty-state">
-            No recent activity.
+          <div className="activity-empty">
+            No relevant activity for the selected filters.
           </div>
         ) : (
           events.map((event) => (
-            <div className="activity-row" key={event.id}>
-              <StatusDiamond
-                status={findingStatus(event.severity)}
-              />
+            <article
+              className={`activity-event ${findingStatus(
+                event.severity,
+              )}`}
+              key={event.id}
+            >
+              <time className="activity-time">
+                {formatAge(event.event_time)}
+              </time>
 
-              <div>
-                <strong>{event.title}</strong>
+              <div className="activity-event-main">
+                <div className="activity-event-meta">
+                  <strong>{event.hostname}</strong>
+
+                  <span>·</span>
+
+                  <span>
+                    {event.service || event.pack_id}
+                  </span>
+
+                  <span
+                    className={`severity ${findingStatus(
+                      event.severity,
+                    )}`}
+                  >
+                    {event.severity}
+                  </span>
+                </div>
+
+                <h3>{event.title}</h3>
 
                 {event.detail && (
-                  <span>{event.detail}</span>
+                  <p>{event.detail}</p>
                 )}
 
-                <span>
-                  {event.hostname}
-                  {' · '}
+                <span className="activity-source">
                   {event.source_key}
-                  {' · '}
-                  {event.pack_id}
                 </span>
               </div>
-
-              <time>{formatAge(event.event_time)}</time>
-            </div>
+            </article>
           ))
         )}
       </div>
@@ -3547,7 +4072,6 @@ function Packs({
   const [editPackMessage, setEditPackMessage] = useState("")
   const [editPackValidated, setEditPackValidated] = useState(false)
   const [editPackSaving, setEditPackSaving] = useState(false)
-  const [packNotice, setPackNotice] = useState("")
   const [packInstallError, setPackInstallError] = useState("")
   const [packInstalling, setPackInstalling] = useState(false)
   const [packStateChanging, setPackStateChanging] = useState<string | null>(null)
@@ -3641,13 +4165,9 @@ function Packs({
         ),
       )
 
-      setPackNotice(
+      showToast(
         `${pack.name} ${enabled ? "enabled" : "disabled"}.`,
-      )
-
-      window.setTimeout(
-        () => setPackNotice(""),
-        3000,
+        'info',
       )
     } catch (error) {
       setPackInstallError(
@@ -3675,7 +4195,6 @@ function Packs({
 
     setPackInstalling(true)
     setPackInstallError("")
-    setPackNotice("")
 
     try {
       if (!file.name.toLowerCase().endsWith(".pack")) {
@@ -3723,15 +4242,12 @@ function Packs({
           : [],
       )
 
-      setPackNotice(
+      showToast(
         data?.id
           ? `Pack ${data.id} installed successfully.`
           : "Pack installed successfully.",
+        'success',
       )
-
-      window.setTimeout(() => {
-        setPackNotice("")
-      }, 3000)
     } catch (error) {
       setPackInstallError(
         error instanceof Error
@@ -3798,13 +4314,10 @@ function Packs({
 
       setRevertPack(null)
 
-      setPackNotice(
+      showToast(
         `${packName} reverted to the official version.`,
+        'success',
       )
-
-      window.setTimeout(() => {
-        setPackNotice("")
-      }, 3000)
     } catch (error) {
       setPackRevertError(
         error instanceof Error
@@ -3870,13 +4383,10 @@ function Packs({
 
       setDeletePack(null)
 
-      setPackNotice(
+      showToast(
         `${packName} deleted successfully.`,
+        'success',
       )
-
-      window.setTimeout(() => {
-        setPackNotice("")
-      }, 3000)
     } catch (error) {
       setPackDeleteError(
         error instanceof Error
@@ -4125,10 +4635,10 @@ function Packs({
         )
       }
 
-      setPackNotice("Pack saved successfully.")
-      window.setTimeout(() => {
-        setPackNotice("")
-      }, 3000)
+      showToast(
+        "Pack saved successfully.",
+        'success',
+      )
 
       setEditPack(null)
     } catch (error) {
@@ -4189,8 +4699,8 @@ function Packs({
           <label
             className={
               packInstalling
-                ? "secondary-button pack-install-button disabled"
-                : "secondary-button pack-install-button"
+                ? "primary-button action-button pack-install-button disabled"
+                : "primary-button action-button pack-install-button"
             }
           >
             {packInstalling ? "Installing..." : "Install pack"}
@@ -4240,12 +4750,6 @@ function Packs({
         />
       </div>
 
-      {packNotice && (
-        <div className="pack-page-notice">
-          {packNotice}
-        </div>
-      )}
-
       {hasPermission(
         currentUser,
         'packs.manage',
@@ -4255,7 +4759,7 @@ function Packs({
         </div>
       )}
 
-      <div className="panel packs-page">
+      <div className="packs-page">
         {loading ? (
           <div className="empty-state">
             Loading packs...
@@ -4271,19 +4775,6 @@ function Packs({
                 className="pack-row"
                 key={pack.id}
               >
-                <span
-                  className={`pack-state-indicator ${
-                    pack.enabled
-                      ? "enabled"
-                      : "disabled"
-                  }`}
-                  aria-label={
-                    pack.enabled
-                      ? "Pack enabled"
-                      : "Pack disabled"
-                  }
-                />
-
                 <div className="pack-main">
                   <div className="pack-title-row">
                     <strong>{pack.name}</strong>
@@ -4291,6 +4782,22 @@ function Packs({
                     <span className="pack-version">
                       v{pack.version}
                     </span>
+
+                    <span
+                      className={`pack-status-text ${
+                        pack.enabled
+                          ? "enabled"
+                          : "disabled"
+                      }`}
+                    >
+                      {pack.enabled ? "Enabled" : "Disabled"}
+                    </span>
+
+                    {pack.overridden && (
+                      <span className="pack-local-override">
+                        Local override
+                      </span>
+                    )}
                   </div>
 
                   <p>{pack.description}</p>
@@ -4303,13 +4810,6 @@ function Packs({
                         ? "Official"
                         : pack.origin}
                     </span>
-
-                    {pack.overridden && (
-                      <>
-                        <span>·</span>
-                        <span>Local override</span>
-                      </>
-                    )}
 
                     <span>·</span>
                     <span>
@@ -4353,9 +4853,7 @@ function Packs({
                     >
                       {packStateChanging === pack.id
                         ? "…"
-                        : pack.enabled
-                          ? "×"
-                          : "✓"}
+                        : "⏻"}
                     </button>
                   )}
 
@@ -4492,7 +4990,7 @@ function Packs({
               </button>
 
               <button
-                className="secondary-button"
+                className="danger-button"
                 disabled={packDeleting}
                 onClick={() => void deleteInstalledPack()}
               >
@@ -4623,7 +5121,7 @@ function Packs({
               </button>
 
               <button
-                className="secondary-button"
+                className="primary-button"
                 onClick={() =>
                   void openPackEditor(editPackWarning)
                 }
@@ -4740,7 +5238,7 @@ function Packs({
               </button>
 
               <button
-                className="secondary-button"
+                className="primary-button"
                 disabled={
                   !editPackValidated ||
                   editPackLoading ||
@@ -4900,6 +5398,12 @@ function AccessPage({
   const [permissions, setPermissions] =
     useState<ApiAccessPermission[]>([])
 
+  const [userSearch, setUserSearch] = useState('')
+  const [userStatusFilter, setUserStatusFilter] =
+    useState<'active' | 'disabled' | 'all'>('active')
+  const [userAuthFilter, setUserAuthFilter] =
+    useState<'all' | 'local' | 'ldap'>('all')
+
   const [groupModalOpen, setGroupModalOpen] =
     useState(false)
   const [editingGroup, setEditingGroup] =
@@ -4949,6 +5453,30 @@ function AccessPage({
   const [userDeleting, setUserDeleting] = useState(false)
   const [deleteUserConfirmOpen, setDeleteUserConfirmOpen] =
     useState(false)
+
+  const filteredUsers = users.filter((user) => {
+    const search = userSearch.trim().toLowerCase()
+
+    const matchesSearch =
+      search.length === 0 ||
+      user.username.toLowerCase().includes(search) ||
+      (user.display_name ?? '').toLowerCase().includes(search) ||
+      (user.email ?? '').toLowerCase().includes(search) ||
+      user.groups.some((group) =>
+        group.toLowerCase().includes(search),
+      )
+
+    const matchesStatus =
+      userStatusFilter === 'all' ||
+      (userStatusFilter === 'active' && user.enabled) ||
+      (userStatusFilter === 'disabled' && !user.enabled)
+
+    const matchesAuth =
+      userAuthFilter === 'all' ||
+      user.auth_type === userAuthFilter
+
+    return matchesSearch && matchesStatus && matchesAuth
+  })
 
   async function loadUsers() {
     if (!canViewUsers) {
@@ -5180,22 +5708,25 @@ function AccessPage({
       const isEditing = editingUser !== null
 
       const payload: Record<string, unknown> = {
-        username: userUsername,
-        display_name: userDisplayName,
-        email: userEmail,
         group_ids: userGroupIds,
       }
 
       if (isEditing) {
         payload.enabled = userEnabled
 
-        if (
-          editingUser?.auth_type === 'local' &&
-          userPassword.length > 0
-        ) {
-          payload.password = userPassword
+        if (editingUser?.auth_type === 'local') {
+          payload.username = userUsername
+          payload.display_name = userDisplayName
+          payload.email = userEmail
+
+          if (userPassword.length > 0) {
+            payload.password = userPassword
+          }
         }
       } else {
+        payload.username = userUsername
+        payload.display_name = userDisplayName
+        payload.email = userEmail
         payload.password = userPassword
       }
 
@@ -5450,7 +5981,7 @@ function AccessPage({
           canManageUsers && (
             <button
               type="button"
-              className="secondary-button"
+              className="primary-button action-button"
               onClick={openNewUser}
             >
               + Add user
@@ -5461,7 +5992,7 @@ function AccessPage({
           canManageGroups && (
             <button
               type="button"
-              className="secondary-button"
+              className="primary-button action-button"
               onClick={openNewGroup}
             >
               + Add group
@@ -5500,22 +6031,73 @@ function AccessPage({
       </div>
 
       {activeTab === 'users' && canViewUsers && (
-        <div className="panel access-list-panel">
-          {usersLoading ? (
-            <div className="empty-state">
-              Loading users...
-            </div>
-          ) : usersError ? (
-            <div className="modal-error">
-              {usersError}
-            </div>
-          ) : users.length === 0 ? (
-            <div className="empty-state">
-              No users found.
-            </div>
-          ) : (
-            <div className="access-list">
-              {users.map((user) => (
+        <>
+          <div className="access-users-toolbar">
+            <input
+              type="search"
+              value={userSearch}
+              onChange={(event) =>
+                setUserSearch(event.target.value)
+              }
+              placeholder="Search users..."
+              aria-label="Search users"
+            />
+
+            <select
+              value={userStatusFilter}
+              onChange={(event) =>
+                setUserStatusFilter(
+                  event.target.value as
+                    | 'active'
+                    | 'disabled'
+                    | 'all',
+                )
+              }
+              aria-label="Filter users by status"
+            >
+              <option value="active">Active</option>
+              <option value="disabled">Disabled</option>
+              <option value="all">All statuses</option>
+            </select>
+
+            <select
+              value={userAuthFilter}
+              onChange={(event) =>
+                setUserAuthFilter(
+                  event.target.value as
+                    | 'all'
+                    | 'local'
+                    | 'ldap',
+                )
+              }
+              aria-label="Filter users by authentication"
+            >
+              <option value="all">All authentication</option>
+              <option value="local">Local</option>
+              <option value="ldap">LDAP</option>
+            </select>
+          </div>
+
+          <div className="panel access-list-panel">
+            {usersLoading ? (
+              <div className="empty-state">
+                Loading users...
+              </div>
+            ) : usersError ? (
+              <div className="modal-error">
+                {usersError}
+              </div>
+            ) : users.length === 0 ? (
+              <div className="empty-state">
+                No users found.
+              </div>
+            ) : filteredUsers.length === 0 ? (
+              <div className="empty-state">
+                No users match the current filters.
+              </div>
+            ) : (
+              <div className="access-list">
+                {filteredUsers.map((user) => (
                 <div
                   className="access-list-row"
                   key={user.id}
@@ -5576,10 +6158,11 @@ function AccessPage({
                     )}
                   </div>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
       )}
 
       {activeTab === 'groups' && canViewGroups && (
@@ -6322,7 +6905,7 @@ function AccessPage({
 
                   <button
                     type="submit"
-                    className="secondary-button"
+                    className="primary-button"
                     disabled={
                       userSaving || userDeleting
                     }
@@ -6495,9 +7078,9 @@ function AuthenticationPage() {
               className="settings-list-row settings-navigation-row"
             >
               <div>
-                <h3>LDAP</h3>
+                <h3>Directory authentication</h3>
                 <p>
-                  Authenticate users against an LDAP directory.
+                  Authenticate users with LDAP or Microsoft Active Directory.
                 </p>
               </div>
 
@@ -6515,25 +7098,6 @@ function AuthenticationPage() {
                 </span>
               </div>
             </NavLink>
-
-            <div className="settings-list-row settings-navigation-row">
-              <div>
-                <h3>Active Directory</h3>
-                <p>
-                  Authenticate users against Microsoft Active Directory.
-                </p>
-              </div>
-
-              <div className="auth-provider-side">
-                <span className="auth-provider-status">
-                  Not configured
-                </span>
-
-                <span className="settings-row-arrow">
-                  ›
-                </span>
-              </div>
-            </div>
           </div>
         </div>
 
@@ -6556,6 +7120,8 @@ function LDAPSettingsPage() {
   const [testing, setTesting] = useState(false)
 
   const [enabled, setEnabled] = useState(false)
+  const [providerType, setProviderType] =
+    useState<'ldap' | 'active_directory'>('ldap')
   const [host, setHost] = useState('')
   const [port, setPort] = useState(389)
   const [security, setSecurity] = useState('plain')
@@ -6572,6 +7138,21 @@ function LDAPSettingsPage() {
   const [usernameAttribute, setUsernameAttribute] =
     useState('uid')
 
+  const [availableGroups, setAvailableGroups] = useState<
+    Array<{
+      id: number
+      name: string
+      builtin: boolean
+    }>
+  >([])
+
+  const [groupMappings, setGroupMappings] = useState<
+    Array<{
+      directoryGroup: string
+      groupId: number | ''
+    }>
+  >([])
+
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
 
@@ -6585,6 +7166,7 @@ function LDAPSettingsPage() {
     display_name: string
     email: string
     dn: string
+    groups?: string[]
   } | null>(null)
 
   useEffect(() => {
@@ -6604,6 +7186,11 @@ function LDAPSettingsPage() {
         const data = await response.json()
 
         setEnabled(Boolean(data.enabled))
+        setProviderType(
+          data.provider_type === 'active_directory'
+            ? 'active_directory'
+            : 'ldap',
+        )
         setHost(data.host ?? '')
         setPort(Number(data.port ?? 389))
         setSecurity(data.security ?? 'plain')
@@ -6618,6 +7205,30 @@ function LDAPSettingsPage() {
         )
         setUsernameAttribute(
           data.username_attribute ?? 'uid',
+        )
+
+        setAvailableGroups(
+          Array.isArray(data.available_groups)
+            ? data.available_groups
+            : [],
+        )
+
+        const loadedMappings =
+          data.group_mappings &&
+          typeof data.group_mappings === 'object'
+            ? Object.entries(data.group_mappings)
+            : []
+
+        setGroupMappings(
+          loadedMappings.map(
+            ([directoryGroup, groupId]) => ({
+              directoryGroup,
+              groupId:
+                typeof groupId === 'number'
+                  ? groupId
+                  : Number(groupId),
+            }),
+          ),
         )
       } catch {
         setError('Could not load LDAP settings.')
@@ -6636,6 +7247,7 @@ function LDAPSettingsPage() {
 
     const payload: Record<string, unknown> = {
       enabled,
+      provider_type: providerType,
       host,
       port,
       security,
@@ -6671,12 +7283,17 @@ function LDAPSettingsPage() {
         throw new Error(
           typeof data?.detail === 'string'
             ? data.detail
-            : 'LDAP connection failed.',
+            : providerType === 'active_directory'
+              ? 'Active Directory connection failed.'
+              : 'LDAP connection failed.',
         )
       }
 
       setMessage(
-        data?.message || 'LDAP connection successful.',
+        data?.message ||
+          (providerType === 'active_directory'
+            ? 'Active Directory connection successful.'
+            : 'LDAP connection successful.'),
       )
     } catch (err) {
       setError(
@@ -6760,8 +7377,25 @@ function LDAPSettingsPage() {
     setMessage('')
     setError('')
 
+    const serializedGroupMappings =
+      providerType === 'active_directory'
+        ? Object.fromEntries(
+            groupMappings
+              .filter(
+                (mapping) =>
+                  mapping.directoryGroup.trim() &&
+                  mapping.groupId !== '',
+              )
+              .map((mapping) => [
+                mapping.directoryGroup.trim(),
+                Number(mapping.groupId),
+              ]),
+          )
+        : {}
+
     const payload: Record<string, unknown> = {
       enabled,
+      provider_type: providerType,
       host,
       port,
       security,
@@ -6770,6 +7404,7 @@ function LDAPSettingsPage() {
       user_search_base: userSearchBase,
       user_filter: userFilter,
       username_attribute: usernameAttribute,
+      group_mappings: serializedGroupMappings,
     }
 
     if (bindPassword) {
@@ -6812,7 +7447,11 @@ function LDAPSettingsPage() {
         Boolean(data.bind_password_configured),
       )
 
-      setMessage('LDAP settings saved.')
+      setMessage(
+        providerType === 'active_directory'
+          ? 'Active Directory settings saved.'
+          : 'LDAP settings saved.',
+      )
     } catch (err) {
       setError(
         err instanceof Error
@@ -6836,10 +7475,10 @@ function LDAPSettingsPage() {
 
         <div className="settings-group">
           <div className="settings-group-heading">
-            <h2>LDAP configuration</h2>
+            <h2>Directory authentication</h2>
             <p>
-              Connect FERPEK Lens to an LDAP directory for user
-              authentication.
+              Connect FERPEK Lens to an LDAP directory or Microsoft
+              Active Directory for user authentication.
             </p>
           </div>
 
@@ -6850,13 +7489,64 @@ function LDAPSettingsPage() {
               </p>
             </div>
           ) : (
-            <form
-              className="panel ldap-settings-card"
-              onSubmit={saveLDAPSettings}
-            >
+            <>
+              <form
+                className="panel ldap-settings-card"
+                onSubmit={saveLDAPSettings}
+              >
+              <div className="ldap-field-stack">
+                <label className="ldap-field">
+                  <span>Directory type</span>
+                  <select
+                    value={providerType}
+                    onChange={(event) => {
+                      const nextProvider =
+                        event.target.value === 'active_directory'
+                          ? 'active_directory'
+                          : 'ldap'
+
+                      setProviderType(nextProvider)
+
+                      if (nextProvider === 'active_directory') {
+                        setUserFilter(
+                          '(|(sAMAccountName={username})(userPrincipalName={username}))',
+                        )
+                        setUsernameAttribute('sAMAccountName')
+                      } else {
+                        setUserFilter('(uid={username})')
+                        setUsernameAttribute('uid')
+                      }
+
+                      setMessage('')
+                      setError('')
+                      setTestUserResult(null)
+                      setTestUserMessage('')
+                      setTestUserError('')
+                    }}
+                  >
+                    <option value="ldap">
+                      Generic LDAP
+                    </option>
+                    <option value="active_directory">
+                      Microsoft Active Directory
+                    </option>
+                  </select>
+
+                  <small>
+                    {providerType === 'active_directory'
+                      ? 'Uses Microsoft Active Directory conventions.'
+                      : 'Uses standard LDAP directory conventions.'}
+                  </small>
+                </label>
+              </div>
+
               <div className="ldap-setting-row ldap-enabled-row">
                 <div>
-                  <strong>LDAP authentication</strong>
+                  <strong>
+                    {providerType === 'active_directory'
+                      ? 'Active Directory authentication'
+                      : 'LDAP authentication'}
+                  </strong>
                   <span>
                     Allow users to authenticate using this directory.
                   </span>
@@ -6882,7 +7572,11 @@ function LDAPSettingsPage() {
                     onChange={(event) =>
                       setHost(event.target.value)
                     }
-                    placeholder="ldap.example.com"
+                    placeholder={
+                      providerType === 'active_directory'
+                        ? 'dc01.example.com'
+                        : 'ldap.example.com'
+                    }
                   />
                 </label>
 
@@ -6938,7 +7632,11 @@ function LDAPSettingsPage() {
                     onChange={(event) =>
                       setBaseDn(event.target.value)
                     }
-                    placeholder="dc=example,dc=com"
+                    placeholder={
+                      providerType === 'active_directory'
+                        ? 'DC=example,DC=com'
+                        : 'dc=example,dc=com'
+                    }
                   />
                 </label>
 
@@ -6949,7 +7647,11 @@ function LDAPSettingsPage() {
                     onChange={(event) =>
                       setBindDn(event.target.value)
                     }
-                    placeholder="cn=service,dc=example,dc=com"
+                    placeholder={
+                      providerType === 'active_directory'
+                        ? 'CN=svc-ferpek,OU=Service Accounts,DC=example,DC=com'
+                        : 'cn=service,dc=example,dc=com'
+                    }
                   />
                 </label>
 
@@ -6993,7 +7695,11 @@ function LDAPSettingsPage() {
                       onChange={(event) =>
                         setUserSearchBase(event.target.value)
                       }
-                      placeholder="ou=users,dc=example,dc=com"
+                      placeholder={
+                        providerType === 'active_directory'
+                          ? 'OU=Users,DC=example,DC=com'
+                          : 'ou=users,dc=example,dc=com'
+                      }
                     />
                   </label>
 
@@ -7004,7 +7710,11 @@ function LDAPSettingsPage() {
                       onChange={(event) =>
                         setUserFilter(event.target.value)
                       }
-                      placeholder="(uid={username})"
+                      placeholder={
+                      providerType === 'active_directory'
+                        ? '(|(sAMAccountName={username})(userPrincipalName={username}))'
+                        : '(uid={username})'
+                    }
                     />
                     <small>
                       Use {'{username}'} where the login name should
@@ -7019,11 +7729,138 @@ function LDAPSettingsPage() {
                       onChange={(event) =>
                         setUsernameAttribute(event.target.value)
                       }
-                      placeholder="uid"
+                      placeholder={
+                      providerType === 'active_directory'
+                        ? 'sAMAccountName'
+                        : 'uid'
+                    }
                     />
                   </label>
                 </div>
               </div>
+
+              {providerType === 'active_directory' && (
+                <div className="ldap-subsection ldap-group-mapping-section">
+                  <div className="ldap-group-mapping-header">
+                    <div className="ldap-subsection-heading">
+                      <strong>Group mappings</strong>
+                      <span>
+                        Map Active Directory groups to FERPEK access groups.
+                        Memberships are synchronized when users sign in.
+                      </span>
+                    </div>
+
+                    <button
+                      type="button"
+                      className="secondary-button ldap-group-mapping-add"
+                      onClick={() =>
+                        setGroupMappings((current) => [
+                          ...current,
+                          {
+                            directoryGroup: '',
+                            groupId: '',
+                          },
+                        ])
+                      }
+                    >
+                      + Add mapping
+                    </button>
+                  </div>
+
+                  <div className="ldap-group-mapping-list">
+                    {groupMappings.length === 0 ? (
+                      <div className="ldap-group-mapping-empty">
+                        No group mappings configured.
+                      </div>
+                    ) : (
+                      groupMappings.map((mapping, index) => (
+                        <div
+                          className="ldap-group-mapping-row"
+                          key={index}
+                        >
+                          <label className="ldap-field">
+                            <span>Active Directory group DN</span>
+                            <input
+                              value={mapping.directoryGroup}
+                              onChange={(event) => {
+                                const value = event.target.value
+
+                                setGroupMappings((current) =>
+                                  current.map((candidate, candidateIndex) =>
+                                    candidateIndex === index
+                                      ? {
+                                          ...candidate,
+                                          directoryGroup: value,
+                                        }
+                                      : candidate,
+                                  ),
+                                )
+                              }}
+                              placeholder="CN=FERPEK-Admins,OU=Groups,DC=example,DC=com"
+                            />
+                          </label>
+
+                          <label className="ldap-field">
+                            <span>FERPEK group</span>
+                            <select
+                              value={mapping.groupId}
+                              onChange={(event) => {
+                                const value = event.target.value
+
+                                setGroupMappings((current) =>
+                                  current.map((candidate, candidateIndex) =>
+                                    candidateIndex === index
+                                      ? {
+                                          ...candidate,
+                                          groupId: value
+                                            ? Number(value)
+                                            : '',
+                                        }
+                                      : candidate,
+                                  ),
+                                )
+                              }}
+                            >
+                              <option value="">
+                                Select group...
+                              </option>
+
+                              {availableGroups.map((group) => (
+                                <option
+                                  value={group.id}
+                                  key={group.id}
+                                >
+                                  {group.name}
+                                  {group.builtin
+                                    ? ' (built-in)'
+                                    : ''}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <button
+                            type="button"
+                            className="secondary-button ldap-group-mapping-remove"
+                            aria-label="Remove group mapping"
+                            onClick={() =>
+                              setGroupMappings((current) =>
+                                current.filter(
+                                  (_, candidateIndex) =>
+                                    candidateIndex !== index,
+                                ),
+                              )
+                            }
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+
+                </div>
+              )}
 
               <div className="ldap-subsection ldap-test-user-section">
                 <div className="ldap-subsection-heading">
@@ -7111,7 +7948,9 @@ function LDAPSettingsPage() {
                 )}
               </div>
 
-              <div className="ldap-actions">
+            </form>
+
+              <div className="ldap-actions ldap-actions-outside">
                 <div>
                   {message && (
                     <p className="save-message">{message}</p>
@@ -7135,15 +7974,22 @@ function LDAPSettingsPage() {
                   </button>
 
                   <button
-                    type="submit"
-                    className="secondary-button"
+                    type="button"
+                    className="secondary-button settings-save-button"
                     disabled={saving || testing}
+                    onClick={() => {
+                      const form = document.querySelector(
+                        '.ldap-settings-card',
+                      ) as HTMLFormElement | null
+
+                      form?.requestSubmit()
+                    }}
                   >
                     {saving ? 'Saving...' : 'Save changes'}
                   </button>
                 </div>
               </div>
-            </form>
+            </>
           )}
         </div>
       </div>
@@ -7601,41 +8447,44 @@ function Settings({
                 </label>
               </div>
 
-              <div className="pack-management-actions">
-                <div>
-                  {packSettingsMessage && (
-                    <p className="save-message">
-                      {packSettingsMessage}
-                    </p>
-                  )}
-
-                  {packSettingsError && (
-                    <p className="save-error">
-                      {packSettingsError}
-                    </p>
-                  )}
-                </div>
-
-                {hasPermission(
-                  currentUser,
-                  'settings.manage',
-                ) && (
-                  <button
-                    className="secondary-button"
-                    onClick={() =>
-                      void savePackSettings()
-                    }
-                    disabled={packSettingsSaving}
-                  >
-                    {packSettingsSaving
-                      ? "Saving..."
-                      : "Save changes"}
-                  </button>
-                )}
-              </div>
             </>
           )}
           </div>
+
+          {!packSettingsLoading && (
+            <div className="pack-management-actions settings-section-actions">
+              <div>
+                {packSettingsMessage && (
+                  <p className="save-message">
+                    {packSettingsMessage}
+                  </p>
+                )}
+
+                {packSettingsError && (
+                  <p className="save-error">
+                    {packSettingsError}
+                  </p>
+                )}
+              </div>
+
+              {hasPermission(
+                currentUser,
+                'settings.manage',
+              ) && (
+                <button
+                  className="secondary-button settings-save-button"
+                  onClick={() =>
+                    void savePackSettings()
+                  }
+                  disabled={packSettingsSaving}
+                >
+                  {packSettingsSaving
+                    ? "Saving..."
+                    : "Save changes"}
+                </button>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="settings-group">
@@ -7743,41 +8592,44 @@ function Settings({
                 <span>Keep indefinitely</span>
               </div>
 
-              <div className="retention-actions">
-                <div>
-                  {retentionMessage && (
-                    <p className="save-message">
-                      {retentionMessage}
-                    </p>
-                  )}
-
-                  {retentionError && (
-                    <p className="save-error">
-                      {retentionError}
-                    </p>
-                  )}
-                </div>
-
-                {hasPermission(
-                  currentUser,
-                  'settings.manage',
-                ) && (
-                  <button
-                    className="secondary-button"
-                    onClick={() =>
-                      void saveRetentionSettings()
-                    }
-                    disabled={retentionSaving}
-                  >
-                    {retentionSaving
-                      ? "Saving..."
-                      : "Save changes"}
-                  </button>
-                )}
-              </div>
             </>
           )}
           </div>
+
+          {!retentionLoading && (
+            <div className="retention-actions settings-section-actions">
+              <div>
+                {retentionMessage && (
+                  <p className="save-message">
+                    {retentionMessage}
+                  </p>
+                )}
+
+                {retentionError && (
+                  <p className="save-error">
+                    {retentionError}
+                  </p>
+                )}
+              </div>
+
+              {hasPermission(
+                currentUser,
+                'settings.manage',
+              ) && (
+                <button
+                  className="secondary-button settings-save-button"
+                  onClick={() =>
+                    void saveRetentionSettings()
+                  }
+                  disabled={retentionSaving}
+                >
+                  {retentionSaving
+                    ? "Saving..."
+                    : "Save changes"}
+                </button>
+              )}
+            </div>
+          )}
         </div>
       </div>
       </div>
@@ -8492,6 +9344,7 @@ function AuthGate() {
 function App() {
   return (
     <BrowserRouter>
+      <GlobalToasts />
       <AuthGate />
     </BrowserRouter>
   )
