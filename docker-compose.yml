@@ -10,8 +10,12 @@ services:
       - "8000:8000"
     environment:
       - DB_PATH=/data/ferpek.db
+      - LDAP_CA_CERT=/etc/ferpek/certs/ad-ca.pem
     volumes:
       - server_data:/data
+      - ./certs/ad-ca.pem:/etc/ferpek/certs/ad-ca.pem:ro
+    extra_hosts:
+      - "example.internal:127.0.0.1"
     healthcheck:
       test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
       interval: 3s

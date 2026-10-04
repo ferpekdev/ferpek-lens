@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
+import hashlib
 import json
 import re
 import os
 import platform
 import queue
+import sqlite3
 
 try:
     from ferpek_lens.pack_engine import PackEngine
@@ -48,6 +50,7 @@ ENVIRONMENT_FILE = CONFIG_DIR / "environment"
 FILE_OFFSETS_FILE = STATE_DIR / "file_offsets.json"
 PACK_STATE_FILE = STATE_DIR / "pack_state.json"
 PACKS_DIR = STATE_DIR / "packs"
+SPOOL_DB_FILE = STATE_DIR / "spool.db"
 
 CONFIG_REFRESH_INTERVAL = 10
 FILE_POLL_INTERVAL = 1
@@ -57,6 +60,748 @@ PACK_STATE_FLUSH_INTERVAL = 2
 MAX_BATCH_SIZE = 100
 
 EVENT_QUEUE = queue.Queue(maxsize=5000)
+
+def spool_db():
+    STATE_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    conn = sqlite3.connect(
+        SPOOL_DB_FILE,
+        timeout=5,
+    )
+
+    conn.row_factory = sqlite3.Row
+
+    conn.execute(
+        "PRAGMA journal_mode=WAL"
+    )
+    conn.execute(
+        "PRAGMA synchronous=FULL"
+    )
+    conn.execute(
+        "PRAGMA busy_timeout=5000"
+    )
+    conn.execute(
+        "PRAGMA foreign_keys=ON"
+    )
+
+    return conn
+
+
+def initialize_spool():
+    with spool_db() as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS collection_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id TEXT NOT NULL UNIQUE,
+                source_key TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                processed INTEGER NOT NULL DEFAULT 0
+            )
+            """
+        )
+
+        columns = {
+            row["name"]
+            for row in conn.execute(
+                "PRAGMA table_info(collection_events)"
+            )
+        }
+
+        if "queued" not in columns:
+            conn.execute(
+                """
+                ALTER TABLE collection_events
+                ADD COLUMN queued INTEGER NOT NULL DEFAULT 0
+                """
+            )
+
+        # A previous process may have died with events marked queued.
+        conn.execute(
+            """
+            UPDATE collection_events
+            SET queued = 0
+            WHERE processed = 0
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS outbox (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id TEXT NOT NULL UNIQUE,
+                event_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at INTEGER NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                next_retry_at INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(event_id)
+                    REFERENCES collection_events(event_id)
+                    ON DELETE CASCADE
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_outbox_retry
+            ON outbox(next_retry_at, id)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_collection_processed
+            ON collection_events(processed, id)
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS collector_checkpoints (
+                source_key TEXT PRIMARY KEY,
+                checkpoint_type TEXT NOT NULL,
+                checkpoint_value TEXT NOT NULL,
+                updated_at INTEGER NOT NULL
+            )
+            """
+        )
+
+
+def journal_event_id(cursor):
+    value = f"journal:{cursor}"
+
+    return hashlib.sha256(
+        value.encode("utf-8")
+    ).hexdigest()
+
+
+def file_event_id(
+    source_key,
+    inode,
+    offset,
+):
+    value = (
+        f"file:{source_key}:"
+        f"{inode}:{offset}"
+    )
+
+    return hashlib.sha256(
+        value.encode("utf-8")
+    ).hexdigest()
+
+
+def spool_event(event_id, event):
+    payload = json.dumps(
+        event,
+        separators=(",", ":"),
+    )
+
+    with spool_db() as conn:
+        cursor = conn.execute(
+            """
+            INSERT OR IGNORE INTO collection_events
+                (
+                    event_id,
+                    source_key,
+                    payload,
+                    created_at
+                )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                event_id,
+                event["source_key"],
+                payload,
+                int(time.time()),
+            ),
+        )
+
+        return cursor.rowcount > 0
+
+
+def claim_spool_event(event_id):
+    with spool_db() as conn:
+        cursor = conn.execute(
+            """
+            UPDATE collection_events
+            SET queued = 1
+            WHERE event_id = ?
+              AND processed = 0
+              AND queued = 0
+            """,
+            (event_id,),
+        )
+
+        return cursor.rowcount > 0
+
+
+def release_spool_event(event_id):
+    with spool_db() as conn:
+        conn.execute(
+            """
+            UPDATE collection_events
+            SET queued = 0
+            WHERE event_id = ?
+              AND processed = 0
+            """,
+            (event_id,),
+        )
+
+
+def refill_event_queue(limit=500):
+    available = EVENT_QUEUE.maxsize - EVENT_QUEUE.qsize()
+
+    if available <= 0:
+        return 0
+
+    limit = min(
+        limit,
+        available,
+    )
+
+    with spool_db() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                event_id,
+                payload
+            FROM collection_events
+            WHERE processed = 0
+              AND queued = 0
+            ORDER BY id
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+
+    added = 0
+
+    for row in rows:
+        event_id = row["event_id"]
+
+        if not claim_spool_event(event_id):
+            continue
+
+        try:
+            event = json.loads(
+                row["payload"]
+            )
+            event["event_id"] = event_id
+
+            EVENT_QUEUE.put_nowait(event)
+            added += 1
+
+        except (
+            json.JSONDecodeError,
+            queue.Full,
+        ):
+            release_spool_event(
+                event_id
+            )
+
+            if EVENT_QUEUE.full():
+                break
+
+    return added
+
+
+
+def mark_spool_event_processed(event_id):
+    with spool_db() as conn:
+        conn.execute(
+            """
+            UPDATE collection_events
+            SET
+                processed = 1,
+                queued = 0
+            WHERE event_id = ?
+            """,
+            (event_id,),
+        )
+
+
+def stable_output_id(
+    kind,
+    event_id,
+    payload,
+):
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    value = (
+        f"{kind}:{event_id}:"
+        f"{canonical}"
+    )
+
+    return hashlib.sha256(
+        value.encode("utf-8")
+    ).hexdigest()
+
+
+def persist_event_outputs(
+    event,
+    relevant_events,
+    findings,
+    send_raw,
+):
+    event_id = event.get("event_id")
+
+    if not event_id:
+        raise RuntimeError(
+            "Cannot persist outputs without event_id"
+        )
+
+    now = int(time.time())
+
+    raw_payload = {
+        "event_id": event_id,
+        "source_key": event.get(
+            "source_key",
+            "",
+        ),
+        "timestamp": int(
+            event.get(
+                "timestamp",
+                now,
+            )
+        ),
+        "service": event.get(
+            "service",
+            "",
+        ),
+        "severity": event.get(
+            "severity",
+            "info",
+        ),
+        "message": event.get(
+            "message",
+            "",
+        ),
+        "metadata": event.get(
+            "metadata",
+            "",
+        ),
+    }
+
+    relevant_payloads = []
+
+    for relevant in relevant_events:
+        payload = {
+            "source_key": event.get(
+                "source_key",
+                "",
+            ),
+            "timestamp": int(
+                event.get(
+                    "timestamp",
+                    now,
+                )
+            ),
+            "pack_id": relevant.get(
+                "pack",
+                "",
+            ),
+            "rule_id": relevant.get(
+                "rule_id",
+                "",
+            ),
+            "service": relevant.get(
+                "service",
+                "",
+            ),
+            "severity": relevant.get(
+                "severity",
+                "info",
+            ),
+            "title": relevant.get(
+                "title",
+                "",
+            ),
+            "detail": relevant.get(
+                "detail",
+                "",
+            ),
+            "fields": relevant.get(
+                "fields",
+                {},
+            ),
+            "source_message": event.get(
+                "message",
+                "",
+            ),
+        }
+
+        output_id = stable_output_id(
+            "relevant",
+            event_id,
+            payload,
+        )
+
+        payload["event_id"] = output_id
+
+        relevant_payloads.append(
+            (
+                output_id,
+                payload,
+            )
+        )
+
+    finding_payloads = []
+
+    for finding in findings:
+        payload = dict(finding)
+
+        output_id = stable_output_id(
+            "finding",
+            event_id,
+            payload,
+        )
+
+        payload["detection_id"] = output_id
+
+        finding_payloads.append(
+            (
+                output_id,
+                payload,
+            )
+        )
+
+    with spool_db() as conn:
+        if send_raw:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO outbox
+                    (
+                        item_id,
+                        event_id,
+                        kind,
+                        payload,
+                        created_at
+                    )
+                VALUES (?, ?, 'event', ?, ?)
+                """,
+                (
+                    f"event:{event_id}",
+                    event_id,
+                    json.dumps(
+                        raw_payload,
+                        separators=(",", ":"),
+                    ),
+                    now,
+                ),
+            )
+
+        for output_id, payload in relevant_payloads:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO outbox
+                    (
+                        item_id,
+                        event_id,
+                        kind,
+                        payload,
+                        created_at
+                    )
+                VALUES (?, ?, 'relevant', ?, ?)
+                """,
+                (
+                    f"relevant:{output_id}",
+                    event_id,
+                    json.dumps(
+                        payload,
+                        separators=(",", ":"),
+                    ),
+                    now,
+                ),
+            )
+
+        for output_id, payload in finding_payloads:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO outbox
+                    (
+                        item_id,
+                        event_id,
+                        kind,
+                        payload,
+                        created_at
+                    )
+                VALUES (?, ?, 'finding', ?, ?)
+                """,
+                (
+                    f"finding:{output_id}",
+                    event_id,
+                    json.dumps(
+                        payload,
+                        separators=(",", ":"),
+                    ),
+                    now,
+                ),
+            )
+
+        conn.execute(
+            """
+            UPDATE collection_events
+            SET processed = 1
+            WHERE event_id = ?
+            """,
+            (event_id,),
+        )
+
+
+def load_due_outbox(limit=100):
+    now = int(time.time())
+
+    with spool_db() as conn:
+        return conn.execute(
+            """
+            SELECT
+                id,
+                item_id,
+                event_id,
+                kind,
+                payload,
+                attempts
+            FROM outbox
+            WHERE next_retry_at <= ?
+            ORDER BY id
+            LIMIT ?
+            """,
+            (
+                now,
+                limit,
+            ),
+        ).fetchall()
+
+
+def delete_outbox_rows(row_ids):
+    if not row_ids:
+        return
+
+    placeholders = ",".join(
+        "?"
+        for _ in row_ids
+    )
+
+    with spool_db() as conn:
+        conn.execute(
+            f"""
+            DELETE FROM outbox
+            WHERE id IN ({placeholders})
+            """,
+            row_ids,
+        )
+
+
+def retry_outbox_rows(rows):
+    now = int(time.time())
+
+    with spool_db() as conn:
+        for row in rows:
+            attempts = int(row["attempts"]) + 1
+
+            delay = min(
+                300,
+                2 ** min(
+                    attempts,
+                    8,
+                ),
+            )
+
+            conn.execute(
+                """
+                UPDATE outbox
+                SET
+                    attempts = ?,
+                    next_retry_at = ?
+                WHERE id = ?
+                """,
+                (
+                    attempts,
+                    now + delay,
+                    row["id"],
+                ),
+            )
+
+
+def cleanup_spool():
+    with spool_db() as conn:
+        cursor = conn.execute(
+            """
+            DELETE FROM collection_events
+            WHERE processed = 1
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM outbox
+                  WHERE outbox.event_id =
+                        collection_events.event_id
+              )
+            """
+        )
+
+        return cursor.rowcount
+
+
+def flush_outbox(agent_key):
+    rows = load_due_outbox(
+        MAX_BATCH_SIZE
+    )
+
+    if not rows:
+        return 0
+
+    groups = {
+        "event": [],
+        "relevant": [],
+        "finding": [],
+    }
+
+    for row in rows:
+        if row["kind"] in groups:
+            groups[row["kind"]].append(row)
+
+    sent = 0
+
+    endpoints = {
+        "event": (
+            "/api/v1/events",
+            "events",
+        ),
+        "relevant": (
+            "/api/v1/relevant",
+            "events",
+        ),
+        "finding": (
+            "/api/v1/findings",
+            "findings",
+        ),
+    }
+
+    for kind, group in groups.items():
+        if not group:
+            continue
+
+        path, payload_key = endpoints[kind]
+
+        payloads = []
+
+        try:
+            for row in group:
+                payloads.append(
+                    json.loads(
+                        row["payload"]
+                    )
+                )
+
+            api_request(
+                "POST",
+                path,
+                {
+                    payload_key: payloads,
+                },
+                agent_key,
+            )
+
+            delete_outbox_rows(
+                [
+                    row["id"]
+                    for row in group
+                ]
+            )
+
+            sent += len(group)
+
+        except Exception as exc:
+            retry_outbox_rows(group)
+
+            log(
+                f"Could not flush {kind} outbox: "
+                f"{exc}"
+            )
+
+    return sent
+
+
+def save_collector_checkpoint(
+    source_key,
+    checkpoint_type,
+    checkpoint_value,
+):
+    with spool_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO collector_checkpoints
+                (
+                    source_key,
+                    checkpoint_type,
+                    checkpoint_value,
+                    updated_at
+                )
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(source_key) DO UPDATE SET
+                checkpoint_type = excluded.checkpoint_type,
+                checkpoint_value = excluded.checkpoint_value,
+                updated_at = excluded.updated_at
+            """,
+            (
+                source_key,
+                checkpoint_type,
+                str(checkpoint_value),
+                int(time.time()),
+            ),
+        )
+
+
+def load_collector_checkpoint(source_key):
+    with spool_db() as conn:
+        row = conn.execute(
+            """
+            SELECT
+                checkpoint_type,
+                checkpoint_value
+            FROM collector_checkpoints
+            WHERE source_key = ?
+            """,
+            (source_key,),
+        ).fetchone()
+
+    if row is None:
+        return None
+
+    return {
+        "type": row["checkpoint_type"],
+        "value": row["checkpoint_value"],
+    }
+
+
+def spool_counts():
+    with spool_db() as conn:
+        pending = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM collection_events
+            WHERE processed = 0
+            """
+        ).fetchone()[0]
+
+        outbox = conn.execute(
+            """
+            SELECT COUNT(*)
+            FROM outbox
+            """
+        ).fetchone()[0]
+
+    return pending, outbox
+
 
 SOURCE_FAMILIES = {
     "authentication": "authentication",
@@ -993,6 +1738,7 @@ def poll_file_sources(
                 lines_read = 0
 
                 while lines_read < MAX_FILE_LINES_PER_CYCLE:
+                    line_offset = file.tell()
                     line = file.readline()
 
                     if not line:
@@ -1004,16 +1750,40 @@ def poll_file_sources(
                     )
 
                     if event is not None:
-                        try:
-                            EVENT_QUEUE.put(
-                                event,
-                                timeout=1,
+                        event_id = file_event_id(
+                            source_key,
+                            stat.st_ino,
+                            line_offset,
+                        )
+
+                        event["event_id"] = event_id
+
+                        persisted = spool_event(
+                            event_id,
+                            event,
+                        )
+
+                        if (
+                            persisted
+                            and claim_spool_event(
+                                event_id
                             )
-                        except queue.Full:
-                            log(
-                                "Event queue full; "
-                                "dropping file event"
-                            )
+                        ):
+                            try:
+                                EVENT_QUEUE.put(
+                                    event,
+                                    timeout=1,
+                                )
+                            except queue.Full:
+                                release_spool_event(
+                                    event_id
+                                )
+
+                                log(
+                                    "Event queue full; "
+                                    "file event remains "
+                                    "in durable spool"
+                                )
 
                     lines_read += 1
 
@@ -1035,18 +1805,32 @@ def poll_file_sources(
 def journal_collector(stop_event):
     log("Starting journald collector")
 
-    command = [
-        "journalctl",
-        "--follow",
-        "--lines=0",
-        "--output=json",
-        "--no-pager",
-    ]
-
     while not stop_event.is_set():
         process = None
 
         try:
+            checkpoint = load_collector_checkpoint(
+                "journald"
+            )
+
+            command = [
+                "journalctl",
+                "--follow",
+                "--output=json",
+                "--no-pager",
+            ]
+
+            if (
+                checkpoint
+                and checkpoint["type"] == "cursor"
+                and checkpoint["value"]
+            ):
+                command.append(
+                    f"--after-cursor={checkpoint['value']}"
+                )
+            else:
+                command.append("--lines=0")
+
             process = subprocess.Popen(
                 command,
                 stdout=subprocess.PIPE,
@@ -1074,6 +1858,13 @@ def journal_collector(stop_event):
                 except json.JSONDecodeError:
                     continue
 
+                cursor = str(
+                    entry.get("__CURSOR", "")
+                )
+
+                if not cursor:
+                    continue
+
                 unit = str(
                     entry.get("_SYSTEMD_UNIT", "")
                 ).lower()
@@ -1082,6 +1873,11 @@ def journal_collector(stop_event):
                     "ferpek-agent.service",
                     "rosetta-agent.service",
                 }:
+                    save_collector_checkpoint(
+                        "journald",
+                        "cursor",
+                        cursor,
+                    )
                     continue
 
                 message = str(
@@ -1089,26 +1885,62 @@ def journal_collector(stop_event):
                 )
 
                 if FERPEK_LOG_MARKER in message:
+                    save_collector_checkpoint(
+                        "journald",
+                        "cursor",
+                        cursor,
+                    )
                     continue
 
                 event = normalize_journal_event(entry)
 
                 if event is None:
+                    save_collector_checkpoint(
+                        "journald",
+                        "cursor",
+                        cursor,
+                    )
                     continue
 
                 event["source_family"] = source_family(
                     event["source_key"]
                 )
 
-                try:
-                    EVENT_QUEUE.put(
-                        event,
-                        timeout=1,
+                event_id = journal_event_id(cursor)
+                event["event_id"] = event_id
+
+                persisted = spool_event(
+                    event_id,
+                    event,
+                )
+
+                save_collector_checkpoint(
+                    "journald",
+                    "cursor",
+                    cursor,
+                )
+
+                if (
+                    persisted
+                    and claim_spool_event(
+                        event_id
                     )
-                except queue.Full:
-                    log(
-                        "Event queue full; dropping journal event"
-                    )
+                ):
+                    try:
+                        EVENT_QUEUE.put(
+                            event,
+                            timeout=1,
+                        )
+                    except queue.Full:
+                        release_spool_event(
+                            event_id
+                        )
+
+                        log(
+                            "Event queue full; "
+                            "journal event remains "
+                            "in durable spool"
+                        )
 
         except Exception as exc:
             if not stop_event.is_set():
@@ -1227,120 +2059,31 @@ def enabled_sources_from_config(config):
     }
 
 
-def send_relevant(
-    agent_key,
-    event,
-    relevant_events,
-):
-    if not relevant_events:
-        return
-
-    payload = []
-
-    for relevant in relevant_events:
-        payload.append(
-            {
-                "source_key": event.get(
-                    "source_key",
-                    "",
-                ),
-                "timestamp": int(
-                    event.get(
-                        "timestamp",
-                        time.time(),
-                    )
-                ),
-                "pack_id": relevant.get(
-                    "pack",
-                    "",
-                ),
-                "rule_id": relevant.get(
-                    "rule_id",
-                    "",
-                ),
-                "service": relevant.get(
-                    "service",
-                    "",
-                ),
-                "severity": relevant.get(
-                    "severity",
-                    "info",
-                ),
-                "title": relevant.get(
-                    "title",
-                    "",
-                ),
-                "detail": relevant.get(
-                    "detail",
-                    "",
-                ),
-                "fields": relevant.get(
-                    "fields",
-                    {},
-                ),
-                "source_message": event.get(
-                    "message",
-                    "",
-                ),
-            }
-        )
-
-    response = api_request(
-        "POST",
-        "/api/v1/relevant",
-        {
-            "events": payload,
-        },
-        agent_key,
-    )
-
-    log(
-        f"Relevant events sent: "
-        f"{response.get('stored', len(payload))}"
-    )
-
-
-def send_findings(agent_key, findings):
-    if not findings:
-        return
-
-    response = api_request(
-        "POST",
-        "/api/v1/findings",
-        {
-            "findings": findings,
-        },
-        agent_key,
-    )
-
-    log(
-        f"Findings sent: {response.get('received', len(findings))}"
-    )
-
-
-def send_event_batch(agent_key, events):
-    if not events:
-        return
-
-    response = api_request(
-        "POST",
-        "/api/v1/events",
-        {
-            "events": events,
-        },
-        agent_key,
-    )
-
-    log(
-        f"Events sent: {response.get('stored', 0)} "
-        f"stored / {response.get('received', len(events))} received"
-    )
-
 
 def main():
     log(
         f"FERPEK Agent {VERSION} starting"
     )
+
+    initialize_spool()
+
+    pending_spool, pending_outbox = spool_counts()
+
+    log(
+        f"Durable spool ready: "
+        f"{pending_spool} pending event(s), "
+        f"{pending_outbox} outbox item(s)"
+    )
+
+    recovered = refill_event_queue(
+        EVENT_QUEUE.maxsize
+    )
+
+    if recovered:
+        log(
+            f"Recovered {recovered} "
+            f"event(s) from durable spool"
+        )
 
     credentials = load_credentials()
     config = None
@@ -1461,7 +2204,6 @@ def main():
     last_config_refresh = 0
     last_send = time.time()
     last_pack_state_flush = time.monotonic()
-    pending_events = []
 
     # Short-lived fingerprints used only to prevent equivalent
     # sources from counting the same event twice in PackEngine.
@@ -1608,31 +2350,46 @@ def main():
                         [],
                     )
 
-                    if relevant:
-                        try:
-                            send_relevant(
-                                agent_key,
-                                event,
-                                relevant,
-                            )
-                        except Exception as exc:
-                            log(
-                                f"Could not send relevant events: {exc}"
+                    try:
+                        persist_event_outputs(
+                            event,
+                            relevant,
+                            findings,
+                            bool(
+                                source_config[
+                                    "send_events"
+                                ]
+                            ),
+                        )
+                    except Exception as exc:
+                        log(
+                            f"Could not persist event outputs: {exc}"
+                        )
+
+                        event_id = event.get(
+                            "event_id"
+                        )
+
+                        if event_id:
+                            release_spool_event(
+                                event_id
                             )
 
-                    if findings:
-                        try:
-                            send_findings(
-                                agent_key,
-                                findings,
-                            )
-                        except Exception as exc:
-                            log(
-                                f"Could not send findings: {exc}"
-                            )
+                        log(
+                            "Event remains in durable spool"
+                        )
 
-                    if source_config["send_events"]:
-                        pending_events.append(event)
+                        time.sleep(1)
+
+                else:
+                    event_id = event.get(
+                        "event_id"
+                    )
+
+                    if event_id:
+                        mark_spool_event_processed(
+                            event_id
+                        )
 
             except queue.Empty:
                 pass
@@ -1653,30 +2410,31 @@ def main():
                     time.monotonic()
                 )
 
-            should_send = (
-                len(pending_events) >= MAX_BATCH_SIZE
-                or (
-                    pending_events
-                    and now - last_send >= SEND_INTERVAL
-                )
-            )
+            refill_event_queue()
 
-            if should_send:
+            if now - last_send >= SEND_INTERVAL:
                 try:
-                    send_event_batch(
-                        agent_key,
-                        pending_events,
+                    sent = flush_outbox(
+                        agent_key
                     )
 
-                    pending_events = []
-                    last_send = time.time()
+                    if sent:
+                        log(
+                            f"Outbox sent: "
+                            f"{sent} item(s)"
+                        )
+
+                    cleanup_spool()
+
+                    if sent < MAX_BATCH_SIZE:
+                        last_send = time.time()
 
                 except Exception as exc:
                     log(
-                        f"Could not send events: {exc}"
+                        f"Could not flush outbox: {exc}"
                     )
 
-                    time.sleep(2)
+                    last_send = time.time()
 
     finally:
         try:
