@@ -1,3 +1,4 @@
+import os
 import json
 """
 FERPEK Server
@@ -29,7 +30,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 from cryptography.fernet import Fernet, InvalidToken
-from ldap3 import BASE, SUBTREE, Connection, Server, Tls
+from ldap3 import BASE, SUBTREE, Connection, Server, Tls, NONE
 from ldap3.core.exceptions import LDAPException
 from ldap3.utils.conv import escape_filter_chars
 from fastapi.responses import FileResponse
@@ -90,6 +91,7 @@ def db():
 def column_exists(conn, table: str, column: str) -> bool:
     rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
     return any(row["name"] == column for row in rows)
+
 
 
 def init_db():
@@ -233,7 +235,7 @@ def init_db():
         conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT NOT NULL UNIQUE,
+                username TEXT NOT NULL,
                 display_name TEXT,
                 email TEXT,
                 auth_type TEXT NOT NULL DEFAULT 'local',
@@ -314,11 +316,24 @@ def init_db():
                 created_at INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL,
                 last_seen_at INTEGER NOT NULL,
+                directory_checked_at INTEGER,
                 FOREIGN KEY(user_id)
                     REFERENCES users(id)
                     ON DELETE CASCADE
             )
         """)
+
+        if not column_exists(
+            conn,
+            "web_sessions",
+            "directory_checked_at",
+        ):
+            conn.execute(
+                """
+                ALTER TABLE web_sessions
+                ADD COLUMN directory_checked_at INTEGER
+                """
+            )
 
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_web_sessions_token_hash
@@ -528,6 +543,54 @@ def init_db():
                 FOREIGN KEY(agent_id) REFERENCES agents(id)
             )
         """)
+
+        if not column_exists(conn, "events", "event_id"):
+            conn.execute(
+                "ALTER TABLE events ADD COLUMN event_id TEXT"
+            )
+
+        if not column_exists(conn, "relevant_events", "event_id"):
+            conn.execute(
+                "ALTER TABLE relevant_events ADD COLUMN event_id TEXT"
+            )
+
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_events_agent_event_id
+            ON events(agent_id, event_id)
+            WHERE event_id IS NOT NULL
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_relevant_agent_event_id
+            ON relevant_events(agent_id, event_id)
+            WHERE event_id IS NOT NULL
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS finding_detections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id INTEGER NOT NULL,
+                detection_id TEXT NOT NULL,
+                finding_id INTEGER,
+                received_at INTEGER NOT NULL,
+                UNIQUE(agent_id, detection_id),
+                FOREIGN KEY(agent_id) REFERENCES agents(id),
+                FOREIGN KEY(finding_id) REFERENCES findings(id)
+            )
+            """
+        )
+
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_finding_detections_received_at
+            ON finding_detections(received_at)
+            """
+        )
 
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_events_agent_time
@@ -1093,6 +1156,7 @@ class EnrollResponse(BaseModel):
 
 
 class FindingIn(BaseModel):
+    detection_id: str | None = None
     pattern_id: str
     group_key: str = ""
     service: str
@@ -1108,6 +1172,7 @@ class FindingsBatch(BaseModel):
 
 
 class EventIn(BaseModel):
+    event_id: str | None = None
     source_key: str
     timestamp: int
     service: str = ""
@@ -1121,6 +1186,7 @@ class EventsBatch(BaseModel):
 
 
 class RelevantEventIn(BaseModel):
+    event_id: str | None = None
     source_key: str
     timestamp: int
     pack_id: str
@@ -1345,7 +1411,31 @@ def login(
     credentials: LoginRequest,
     response: Response,
 ):
-    username = credentials.username.strip()
+    login_identifier = credentials.username.strip()
+
+    if not login_identifier:
+        raise HTTPException(
+            401,
+            "Invalid username or password",
+        )
+
+    # Resolve explicit provider prefix
+    forced_auth_type = None
+    username = login_identifier
+
+    login_identifier_lower = login_identifier.lower()
+
+    if login_identifier_lower.startswith("local:"):
+        forced_auth_type = "local"
+        username = login_identifier[6:].strip()
+
+    elif login_identifier_lower.startswith("ldap:"):
+        forced_auth_type = "ldap"
+        username = login_identifier[5:].strip()
+
+    elif login_identifier_lower.startswith("ad:"):
+        forced_auth_type = "active_directory"
+        username = login_identifier[3:].strip()
 
     if not username:
         raise HTTPException(
@@ -1354,23 +1444,37 @@ def login(
         )
 
     ldap_user = None
+    user = None
 
-    with db() as conn:
-        user = conn.execute(
-            """
-            SELECT *
-            FROM users
-            WHERE username = ? COLLATE NOCASE
-            """,
-            (username,),
-        ).fetchone()
+    # Look for a local identity unless a directory provider was forced
+    if forced_auth_type not in {
+        "ldap",
+        "active_directory",
+    }:
+        with db() as conn:
+            user = conn.execute(
+                """
+                SELECT *
+                FROM users
+                WHERE username = ? COLLATE NOCASE
+                  AND auth_type = 'local'
+                """,
+                (username,),
+            ).fetchone()
 
-    # -----------------------------------------------------
-    # Local authentication always takes precedence.
-    # This preserves local recovery/admin access.
-    # -----------------------------------------------------
-
-    if user is not None and user["auth_type"] == "local":
+    # Local authentication
+    if (
+        forced_auth_type == "local"
+        or (
+            forced_auth_type is None
+            and user is not None
+        )
+    ):
+        if user is None:
+            raise HTTPException(
+                401,
+                "Invalid username or password",
+            )
         if (
             not bool(user["enabled"])
             or not user["password_hash"]
@@ -1384,10 +1488,7 @@ def login(
                 "Invalid username or password",
             )
 
-    # -----------------------------------------------------
-    # LDAP authentication
-    # -----------------------------------------------------
-
+    # Directory authentication
     else:
         provider_type = get_setting_text(
             "ldap_provider_type",
@@ -1399,6 +1500,19 @@ def login(
             if provider_type == "active_directory"
             else "ldap"
         )
+
+        # Reject a forced provider that is not configured
+        if (
+            forced_auth_type in {
+                "ldap",
+                "active_directory",
+            }
+            and forced_auth_type != directory_auth_type
+        ):
+            raise HTTPException(
+                401,
+                "Invalid username or password",
+            )
 
         if not get_setting_bool(
             "ldap_enabled",
@@ -1415,20 +1529,6 @@ def login(
             user is not None
             and user["auth_type"] == directory_auth_type
             and not bool(user["enabled"])
-        ):
-            raise HTTPException(
-                401,
-                "Invalid username or password",
-            )
-
-        # Do not silently convert users from some other
-        # authentication provider.
-        if (
-            user is not None
-            and user["auth_type"] not in {
-                "local",
-                directory_auth_type,
-            }
         ):
             raise HTTPException(
                 401,
@@ -1483,8 +1583,12 @@ def login(
                 SELECT *
                 FROM users
                 WHERE username = ? COLLATE NOCASE
+                  AND auth_type = ?
                 """,
-                (username,),
+                (
+                    username,
+                    directory_auth_type,
+                ),
             ).fetchone()
 
             if user is None:
@@ -1495,19 +1599,15 @@ def login(
                     SELECT *
                     FROM users
                     WHERE username = ? COLLATE NOCASE
+                      AND auth_type = ?
                     """,
-                    (ldap_username,),
+                    (
+                        ldap_username,
+                        directory_auth_type,
+                    ),
                 ).fetchone()
 
                 if canonical_user is not None:
-                    # Never overwrite an existing local or
-                    # different-provider account.
-                    if canonical_user["auth_type"] != directory_auth_type:
-                        raise HTTPException(
-                            401,
-                            "Invalid username or password",
-                        )
-
                     user = canonical_user
 
             if user is None:
@@ -1674,7 +1774,8 @@ def get_web_user(
             SELECT
                 users.*,
                 web_sessions.id AS session_id,
-                web_sessions.expires_at
+                web_sessions.expires_at,
+                web_sessions.directory_checked_at
             FROM web_sessions
             JOIN users
               ON users.id = web_sessions.user_id
@@ -1713,6 +1814,70 @@ def get_web_user(
                 row["session_id"],
             ),
         )
+
+        if row["auth_type"] == "active_directory":
+            directory_checked_at = (
+                row["directory_checked_at"] or 0
+            )
+
+            if now - directory_checked_at >= 600:
+                try:
+                    directory_user = authenticate_ldap_user(
+                        row["username"],
+                        None,
+                    )
+                except RuntimeError as exc:
+                    print(
+                        "[FERPEK LDAP] "
+                        f"session revalidation failed: {exc}",
+                        flush=True,
+                    )
+
+                    raise HTTPException(
+                        503,
+                        "Authentication service unavailable",
+                    )
+
+                if (
+                    directory_user is None
+                    or not directory_user.get(
+                        "enabled",
+                        True,
+                    )
+                ):
+                    conn.execute(
+                        """
+                        DELETE FROM web_sessions
+                        WHERE user_id = ?
+                        """,
+                        (row["id"],),
+                    )
+
+                    raise HTTPException(
+                        401,
+                        "Session expired or invalid",
+                    )
+
+                sync_directory_user_groups(
+                    conn,
+                    row["id"],
+                    directory_user.get(
+                        "groups",
+                        [],
+                    ),
+                )
+
+                conn.execute(
+                    """
+                    UPDATE web_sessions
+                    SET directory_checked_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        now,
+                        row["session_id"],
+                    ),
+                )
 
         groups = [
             group["name"]
@@ -3730,6 +3895,9 @@ def test_ldap_connection(
     }:
         tls = Tls(
             validate=ssl.CERT_REQUIRED,
+            ca_certs_file=os.environ.get(
+                "LDAP_CA_CERT"
+            ),
         )
 
     server = Server(
@@ -3737,6 +3905,7 @@ def test_ldap_connection(
         port=settings.port,
         use_ssl=use_ssl,
         tls=tls,
+        get_info=NONE,
         connect_timeout=5,
     )
 
@@ -4064,7 +4233,7 @@ def sync_directory_user_groups(
 
 def authenticate_ldap_user(
     username: str,
-    password: str,
+    password: Optional[str],
 ):
     host = get_setting_text(
         "ldap_host",
@@ -4119,15 +4288,6 @@ def authenticate_ldap_user(
         else "cn"
     )
 
-    search_attributes = [
-        username_attribute,
-        display_name_attribute,
-        "mail",
-    ]
-
-    if provider_type == "active_directory":
-        search_attributes.append("memberOf")
-
     user_filter = get_setting_text(
         "ldap_user_filter",
         default_user_filter,
@@ -4137,6 +4297,20 @@ def authenticate_ldap_user(
         "ldap_username_attribute",
         default_username_attribute,
     ).strip()
+
+    search_attributes = [
+        username_attribute,
+        display_name_attribute,
+        "mail",
+    ]
+
+    if provider_type == "active_directory":
+        search_attributes.extend(
+            [
+                "memberOf",
+                "userAccountControl",
+            ]
+        )
 
     encrypted_bind_password = get_setting_text(
         "ldap_bind_password",
@@ -4183,6 +4357,9 @@ def authenticate_ldap_user(
     }:
         tls = Tls(
             validate=ssl.CERT_REQUIRED,
+            ca_certs_file=os.environ.get(
+                "LDAP_CA_CERT"
+            ),
         )
 
     server = Server(
@@ -4190,6 +4367,7 @@ def authenticate_ldap_user(
         port=port,
         use_ssl=security == "ldaps",
         tls=tls,
+        get_info=NONE,
         connect_timeout=5,
     )
 
@@ -4291,6 +4469,29 @@ def authenticate_ldap_user(
             else []
         )
 
+        directory_enabled = True
+
+        if provider_type == "active_directory":
+            account_control = attribute_value(
+                "userAccountControl"
+            )
+
+            try:
+                directory_enabled = not (
+                    int(account_control) & 2
+                )
+            except (TypeError, ValueError):
+                directory_enabled = True
+
+        directory_user = {
+            "username": resolved_username,
+            "display_name": display_name,
+            "email": email,
+            "dn": user_dn,
+            "groups": directory_groups,
+            "enabled": directory_enabled,
+        }
+
     except LDAPException as exc:
         print(
             "[FERPEK LDAP] "
@@ -4308,6 +4509,12 @@ def authenticate_ldap_user(
             directory_connection.unbind()
         except Exception:
             pass
+
+    if password is None:
+        return directory_user
+
+    if not directory_enabled:
+        return None
 
     user_connection = Connection(
         server,
@@ -4341,13 +4548,7 @@ def authenticate_ldap_user(
         except Exception:
             pass
 
-    return {
-        "username": resolved_username,
-        "display_name": display_name,
-        "email": email,
-        "dn": user_dn,
-        "groups": directory_groups,
-    }
+    return directory_user
 
 
 @app.post(
@@ -4553,13 +4754,33 @@ def post_relevant_events(
 ):
     now = int(time.time())
 
+    stored = 0
+    duplicates = 0
+
     with db() as conn:
         for event in batch.events:
-            conn.execute(
+            severity_value = event.severity.strip().lower()
+
+            severity_aliases = {
+                "crit": "critical",
+                "critical": "critical",
+                "warn": "warning",
+                "warning": "warning",
+                "info": "info",
+                "informational": "info",
+            }
+
+            severity = severity_aliases.get(
+                severity_value,
+                severity_value,
+            )
+
+            cursor = conn.execute(
                 """
-                INSERT INTO relevant_events
+                INSERT OR IGNORE INTO relevant_events
                     (
                         agent_id,
+                        event_id,
                         source_key,
                         event_time,
                         pack_id,
@@ -4572,16 +4793,17 @@ def post_relevant_events(
                         source_message,
                         received_at
                     )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     agent["id"],
+                    event.event_id,
                     event.source_key,
                     event.timestamp,
                     event.pack_id,
                     event.rule_id,
                     event.service,
-                    event.severity,
+                    severity,
                     event.title,
                     event.detail,
                     json.dumps(
@@ -4593,9 +4815,15 @@ def post_relevant_events(
                 ),
             )
 
+            if cursor.rowcount == 0:
+                duplicates += 1
+            else:
+                stored += 1
+
     return {
         "received": len(batch.events),
-        "stored": len(batch.events),
+        "stored": stored,
+        "duplicates": duplicates,
     }
 
 
@@ -4692,6 +4920,9 @@ def post_events(
 ):
     now = int(time.time())
 
+    accepted = 0
+    duplicates = 0
+
     with db() as conn:
         configured_sources = {
             row["source_key"]: bool(row["send_events"])
@@ -4705,18 +4936,19 @@ def post_events(
             ).fetchall()
         }
 
-        accepted = 0
-
         for event in batch.events:
-            # Server-side enforcement as well as agent-side filtering.
-            if not configured_sources.get(event.source_key, False):
+            if not configured_sources.get(
+                event.source_key,
+                False,
+            ):
                 continue
 
-            conn.execute(
+            cursor = conn.execute(
                 """
-                INSERT INTO events
+                INSERT OR IGNORE INTO events
                     (
                         agent_id,
+                        event_id,
                         source_key,
                         event_time,
                         service,
@@ -4725,10 +4957,11 @@ def post_events(
                         metadata,
                         received_at
                     )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     agent["id"],
+                    event.event_id,
                     event.source_key,
                     event.timestamp,
                     event.service,
@@ -4739,11 +4972,15 @@ def post_events(
                 ),
             )
 
-            accepted += 1
+            if cursor.rowcount == 0:
+                duplicates += 1
+            else:
+                accepted += 1
 
     return {
         "received": len(batch.events),
         "stored": accepted,
+        "duplicates": duplicates,
     }
 
 
@@ -4799,9 +5036,49 @@ def post_findings(
 
     created = 0
     updated = 0
+    duplicates = 0
 
     with db() as conn:
         for finding in batch.findings:
+            if finding.detection_id:
+                cursor = conn.execute(
+                    """
+                    INSERT OR IGNORE INTO finding_detections
+                        (
+                            agent_id,
+                            detection_id,
+                            finding_id,
+                            received_at
+                        )
+                    VALUES (?, ?, NULL, ?)
+                    """,
+                    (
+                        agent["id"],
+                        finding.detection_id,
+                        now,
+                    ),
+                )
+
+                if cursor.rowcount == 0:
+                    duplicates += 1
+                    continue
+
+            severity_value = finding.severity.strip().lower()
+
+            severity_aliases = {
+                "crit": "critical",
+                "critical": "critical",
+                "warn": "warning",
+                "warning": "warning",
+                "info": "info",
+                "informational": "info",
+            }
+
+            severity = severity_aliases.get(
+                severity_value,
+                severity_value,
+            )
+
             existing = conn.execute(
                 """
                 SELECT id
@@ -4821,6 +5098,8 @@ def post_findings(
             ).fetchone()
 
             if existing:
+                finding_id = existing["id"]
+
                 conn.execute(
                     """
                     UPDATE findings
@@ -4838,21 +5117,21 @@ def post_findings(
                     """,
                     (
                         finding.service,
-                        finding.severity,
+                        severity,
                         finding.title,
                         finding.detail,
                         finding.suggest,
                         finding.source_line,
                         now,
                         now,
-                        existing["id"],
+                        finding_id,
                     ),
                 )
 
                 updated += 1
 
             else:
-                conn.execute(
+                cursor = conn.execute(
                     """
                     INSERT INTO findings
                         (
@@ -4877,7 +5156,7 @@ def post_findings(
                         finding.pattern_id,
                         finding.group_key,
                         finding.service,
-                        finding.severity,
+                        severity,
                         finding.title,
                         finding.detail,
                         finding.suggest,
@@ -4888,12 +5167,29 @@ def post_findings(
                     ),
                 )
 
+                finding_id = cursor.lastrowid
                 created += 1
+
+            if finding.detection_id:
+                conn.execute(
+                    """
+                    UPDATE finding_detections
+                    SET finding_id = ?
+                    WHERE agent_id = ?
+                      AND detection_id = ?
+                    """,
+                    (
+                        finding_id,
+                        agent["id"],
+                        finding.detection_id,
+                    ),
+                )
 
     return {
         "received": len(batch.findings),
         "created": created,
         "updated": updated,
+        "duplicates": duplicates,
     }
 
 
@@ -4981,7 +5277,7 @@ def list_agents():
                 SUM(
                     CASE
                         WHEN findings.status = 'open'
-                         AND findings.severity = 'crit'
+                         AND findings.severity = 'critical'
                         THEN 1 ELSE 0
                     END
                 ) AS critical_count,
@@ -4989,7 +5285,7 @@ def list_agents():
                 SUM(
                     CASE
                         WHEN findings.status = 'open'
-                         AND findings.severity = 'warn'
+                         AND findings.severity = 'warning'
                         THEN 1 ELSE 0
                     END
                 ) AS warning_count
@@ -5527,6 +5823,7 @@ def validate_pack_directory(pack_dir: Path):
     )
 
     rules_dir = pack_dir / "rules"
+    rule_ids = set()
 
     if rules_dir.is_dir():
         for rule_path in sorted(
@@ -5550,6 +5847,18 @@ def validate_pack_directory(pack_dir: Path):
                 rule,
                 f"rules/{rule_path.name}",
             )
+
+            rule_id = str(
+                rule.get("id", "")
+            ).strip()
+
+            if rule_id in rule_ids:
+                raise HTTPException(
+                    400,
+                    f"Duplicate rule id: {rule_id}",
+                )
+
+            rule_ids.add(rule_id)
 
     if not is_pack_server_compatible(
         manifest
@@ -5910,6 +6219,24 @@ def save_pack_changes(
                 "Pack id cannot be changed",
             )
 
+        origin = str(
+            manifest.get("origin", "local")
+        ).strip().lower()
+
+        builtin_dir = BUILTIN_PACKS_PATH / pack_id
+
+        if (
+            origin == "official"
+            and not builtin_dir.is_dir()
+        ):
+            raise HTTPException(
+                400,
+                (
+                    "Only built-in packs may use "
+                    "origin official"
+                ),
+            )
+
         destination = (
             INSTALLED_PACKS_PATH / pack_id
         )
@@ -6149,6 +6476,19 @@ async def install_pack(file: UploadFile = File(...)):
         pack_id = str(manifest["id"]).strip()
         version = str(manifest["version"]).strip()
 
+        origin = str(
+            manifest.get("origin", "local")
+        ).strip().lower()
+
+        if origin == "official":
+            raise HTTPException(
+                400,
+                (
+                    "Uploaded packs cannot declare "
+                    "origin official"
+                ),
+            )
+
         with zipfile.ZipFile(
             archive_path,
             "r",
@@ -6203,7 +6543,7 @@ async def install_pack(file: UploadFile = File(...)):
                             target,
                         )
 
-        installed_manifest = read_pack_manifest(
+        installed_manifest = validate_pack_directory(
             staging_dir
         )
 
@@ -6213,20 +6553,61 @@ async def install_pack(file: UploadFile = File(...)):
                 "Pack id changed during installation",
             )
 
-        if not is_pack_server_compatible(
-            installed_manifest
-        ):
-            raise HTTPException(
-                400,
-                f"Pack {pack_id} {version} is not compatible "
-                f"with FERPEK Server {SERVER_VERSION}",
-            )
-
         destination = (
             INSTALLED_PACKS_PATH / pack_id
         )
 
+        install_action = "installed"
+
         if destination.exists():
+            current_manifest = read_pack_manifest(
+                destination
+            )
+
+            if current_manifest is None:
+                raise HTTPException(
+                    400,
+                    "Existing installed pack is invalid",
+                )
+
+            current_version = str(
+                current_manifest.get(
+                    "version",
+                    "",
+                )
+            ).strip()
+
+            try:
+                incoming_version = Version(version)
+                installed_version = Version(
+                    current_version
+                )
+            except InvalidVersion:
+                raise HTTPException(
+                    400,
+                    "Existing installed pack has an invalid version",
+                )
+
+            if incoming_version == installed_version:
+                raise HTTPException(
+                    409,
+                    (
+                        f"Pack {pack_id} version "
+                        f"{version} is already installed"
+                    ),
+                )
+
+            if incoming_version < installed_version:
+                raise HTTPException(
+                    409,
+                    (
+                        f"Pack downgrade is not allowed: "
+                        f"{current_version} -> {version}"
+                    ),
+                )
+
+            install_action = "updated"
+
             backup_dir = (
                 INSTALLED_PACKS_PATH
                 / f".backup-{pack_id}-{int(time.time())}"
@@ -6272,6 +6653,7 @@ async def install_pack(file: UploadFile = File(...)):
             "id": pack_id,
             "version": version,
             "installed": True,
+            "action": install_action,
         }
 
     finally:
@@ -6493,6 +6875,15 @@ def delete_pack(pack_id: str):
 
     shutil.rmtree(installed_dir)
 
+    with db() as conn:
+        conn.execute(
+            """
+            DELETE FROM pack_states
+            WHERE pack_id = ?
+            """,
+            (pack_id,),
+        )
+
     return {
         "ok": True,
         "id": pack_id,
@@ -6516,11 +6907,28 @@ def list_packs():
         if manifest is None:
             continue
 
-        if not is_pack_allowed(manifest):
-            continue
+        allowed = is_pack_allowed(
+            manifest
+        )
 
-        if not is_pack_server_compatible(manifest):
-            continue
+        server_compatible = (
+            is_pack_server_compatible(
+                manifest
+            )
+        )
+
+        enabled = is_pack_enabled(
+            manifest["id"]
+        )
+
+        blocked_reason = ""
+
+        if not allowed:
+            blocked_reason = "policy"
+        elif not server_compatible:
+            blocked_reason = (
+                "server_incompatible"
+            )
 
         rules_dir = pack_dir / "rules"
 
@@ -6583,9 +6991,15 @@ def list_packs():
                 ),
                 "rule_count": rule_count,
                 "installed": True,
-                "enabled": is_pack_enabled(
-                    manifest["id"]
+                "enabled": enabled,
+                "allowed": allowed,
+                "server_compatible": server_compatible,
+                "effective_enabled": (
+                    enabled
+                    and allowed
+                    and server_compatible
                 ),
+                "blocked_reason": blocked_reason,
                 "overridden": (
                     pack_dir.parent == INSTALLED_PACKS_PATH
                     and (

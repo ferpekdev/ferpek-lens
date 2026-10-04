@@ -8309,7 +8309,6 @@ section {
 .host-findings-list {
   width: 100%;
 
-  border-top: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
 }
 
@@ -8947,6 +8946,18 @@ section {
 .pack-status-text.disabled {
   color: var(--text-muted);
   background: transparent;
+}
+
+.pack-status-text.blocked {
+  border-color: rgba(184, 95, 49, 0.35);
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+.pack-status-text.incompatible {
+  border-color: rgba(220, 75, 75, 0.35);
+  background: rgba(220, 75, 75, 0.08);
+  color: #c64b4b;
 }
 
 .pack-meta {
@@ -10328,4 +10339,96 @@ section {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+/* Directory group mappings */
+.ldap-group-mapping-section {
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+.ldap-group-mapping-header {
+  margin-bottom: 12px;
+}
+
+.ldap-group-mapping-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.ldap-group-mapping-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+/* Directory group mappings */
+.ldap-group-mapping-section {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.ldap-group-mapping-header {
+  margin-bottom: 12px;
+}
+
+.ldap-group-mapping-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+.ldap-group-mapping-row {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(220px, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+/* Directory group mappings */
+.ldap-group-mapping-list {
+  padding-bottom: 16px;
+}
+
+.status-diamond.info {
+  background: var(--text-muted);
+}
+
+.severity.info {
+  color: var(--text-muted);
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.activity-event.info {
+  border-left-color: var(--text-muted);
+}
+
+.finding-resolved-state {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.finding-resolved-state strong {
+  font-weight: 600;
+}
+
+
+
+
+
+
+
+.host-findings-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
 }

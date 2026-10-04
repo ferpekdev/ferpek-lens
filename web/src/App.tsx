@@ -11,7 +11,7 @@ import {
 import './App.css'
 import { createPortal } from 'react-dom'
 
-type Status = 'healthy' | 'warning' | 'critical' | 'unknown'
+type Status = 'healthy' | 'info' | 'warning' | 'critical' | 'unknown'
 
 type ToastType = 'info' | 'success' | 'error'
 
@@ -358,6 +358,10 @@ type ApiPack = {
   rule_count: number
   installed: boolean
   enabled: boolean
+  allowed: boolean
+  server_compatible: boolean
+  effective_enabled: boolean
+  blocked_reason: string
   overridden: boolean
   capabilities: {
     edit: boolean
@@ -365,6 +369,35 @@ type ApiPack = {
     delete: boolean
   }
 }
+
+function getPackStatus(pack: ApiPack) {
+  if (!pack.enabled) {
+    return {
+      label: "Disabled",
+      className: "disabled",
+    }
+  }
+
+  if (!pack.allowed) {
+    return {
+      label: "Blocked",
+      className: "blocked",
+    }
+  }
+
+  if (!pack.server_compatible) {
+    return {
+      label: "Incompatible",
+      className: "incompatible",
+    }
+  }
+
+  return {
+    label: "Enabled",
+    className: "enabled",
+  }
+}
+
 
 type ApiEvent = {
   id: number
@@ -405,6 +438,10 @@ function findingStatus(severity: string): Status {
 
   if (value === 'warn' || value === 'warning') {
     return 'warning'
+  }
+
+  if (value === 'info' || value === 'informational') {
+    return 'info'
   }
 
   return 'unknown'
@@ -1061,8 +1098,15 @@ function Overview({
     'findings.view',
   )
 
+  const canViewLogs = hasPermission(
+    currentUser,
+    'logs.view',
+  )
+
   const [agents, setAgents] = useState<ApiAgent[]>([])
   const [apiFindings, setApiFindings] = useState<ApiFinding[]>([])
+  const [recentActivity, setRecentActivity] =
+    useState<ApiRelevantEvent[]>([])
 
   async function loadOverview() {
     try {
@@ -1099,6 +1143,24 @@ function Overview({
       } else {
         setApiFindings([])
       }
+
+      if (canViewLogs) {
+        const activityResponse = await fetch(
+          '/api/v1/relevant?limit=3',
+        )
+
+        if (!activityResponse.ok) {
+          throw new Error(
+            'Could not load recent activity',
+          )
+        }
+
+        setRecentActivity(
+          await activityResponse.json(),
+        )
+      } else {
+        setRecentActivity([])
+      }
     } catch (err) {
       console.error('Could not load overview:', err)
     }
@@ -1110,7 +1172,7 @@ function Overview({
     const timer = window.setInterval(loadOverview, 5000)
 
     return () => window.clearInterval(timer)
-  }, [canViewHosts, canViewFindings])
+  }, [canViewHosts, canViewFindings, canViewLogs])
 
   const criticalCount = apiFindings.filter(
     (finding) => findingStatus(finding.severity) === 'critical',
@@ -1362,37 +1424,47 @@ function Overview({
           )}
         </div>
 
-        <div className="panel">
-          <div className="panel-header">
-            <div>
-              <h2>Recent activity</h2>
-              <p>Latest detected findings</p>
-            </div>
-          </div>
-
-          {apiFindings.length === 0 ? (
-            <div className="empty-state">
-              No recent findings.
-            </div>
-          ) : (
-            apiFindings.slice(0, 3).map((finding) => (
-              <div className="activity-row" key={finding.id}>
-                <StatusDiamond
-                  status={findingStatus(finding.severity)}
-                />
-
-                <div>
-                  <strong>{finding.title}</strong>
-                  <span>
-                    {finding.hostname} · {finding.service}
-                  </span>
-                </div>
-
-                <time>{formatAge(finding.received_at)}</time>
+        {canViewLogs && (
+          <div className="panel">
+            <div className="panel-header">
+              <div>
+                <h2>Recent activity</h2>
+                <p>Latest relevant events</p>
               </div>
-            ))
-          )}
-        </div>
+
+              <NavLink
+                className="text-button"
+                to="/activity"
+              >
+                View activity →
+              </NavLink>
+            </div>
+
+            {recentActivity.length === 0 ? (
+              <div className="empty-state">
+                No recent activity.
+              </div>
+            ) : (
+              recentActivity.map((event) => (
+                <div className="activity-row" key={event.id}>
+                  <StatusDiamond
+                    status={findingStatus(event.severity)}
+                  />
+
+                  <div>
+                    <strong>{event.title}</strong>
+                    <span>
+                      {event.hostname} ·{' '}
+                      {event.service || event.pack_id}
+                    </span>
+                  </div>
+
+                  <time>{formatAge(event.event_time)}</time>
+                </div>
+              ))
+            )}
+          </div>
+        )}
       </section>
     </>
   )
@@ -2465,6 +2537,10 @@ function HostDetail({
   const [events, setEvents] = useState<ApiEvent[]>([])
   const [relevantApiEvents, setRelevantApiEvents] = useState<ApiRelevantEvent[]>([])
   const [findings, setFindings] = useState<ApiFinding[]>([])
+  const [hostFindingStatus, setHostFindingStatus] =
+    useState<'open' | 'resolved' | 'all'>('open')
+  const [resolvingHostFinding, setResolvingHostFinding] =
+    useState<number | null>(null)
   const [sources, setSources] = useState<LogSource[]>([])
   const [sourceDrafts, setSourceDrafts] = useState<LogSource[]>([])
   const [sourcesDirty, setSourcesDirty] = useState(false)
@@ -2479,6 +2555,12 @@ function HostDetail({
 
   const [loading, setLoading] = useState(true)
 
+  const visibleHostFindings = findings.filter(
+    (finding) =>
+      hostFindingStatus === 'all' ||
+      finding.status === hostFindingStatus,
+  )
+
   async function loadHostData() {
     try {
       const [
@@ -2491,7 +2573,7 @@ function HostDetail({
         fetch('/api/v1/agents'),
         fetch(`/api/v1/events?agent_id=${agentId}&limit=200`),
         fetch(`/api/v1/relevant?agent_id=${agentId}&limit=200`),
-        fetch('/api/v1/findings?limit=200'),
+        fetch(`/api/v1/findings?agent_id=${agentId}&limit=200`),
         fetch(`/api/v1/agents/${agentId}/sources`),
       ])
 
@@ -2534,11 +2616,7 @@ function HostDetail({
       )
 
       if (currentAgent) {
-        setFindings(
-          findingsData.filter(
-            (finding) => finding.hostname === currentAgent.hostname,
-          ),
-        )
+        setFindings(findingsData)
       } else {
         setFindings([])
       }
@@ -2546,6 +2624,45 @@ function HostDetail({
       console.error('Could not load host details:', err)
     } finally {
       setLoading(false)
+    }
+  }
+
+  async function resolveHostFinding(
+    findingId: number,
+  ) {
+    if (
+      !hasPermission(
+        currentUser,
+        'findings.resolve',
+      )
+    ) {
+      return
+    }
+
+    setResolvingHostFinding(findingId)
+
+    try {
+      const response = await fetch(
+        `/api/v1/findings/${findingId}/resolve`,
+        {
+          method: 'POST',
+        },
+      )
+
+      if (!response.ok) {
+        throw new Error(
+          `Server returned ${response.status}`,
+        )
+      }
+
+      await loadHostData()
+    } catch (err) {
+      console.error(
+        'Could not resolve host finding:',
+        err,
+      )
+    } finally {
+      setResolvingHostFinding(null)
     }
   }
 
@@ -3026,12 +3143,43 @@ function HostDetail({
 
       {activeTab === 'findings' && (
         <div className="host-findings-list">
-          {findings.length === 0 ? (
+          <div className="host-findings-toolbar">
+            <div className="finding-filter-group">
+              <span className="finding-filter-label">
+                Status
+              </span>
+
+              <div className="filter-buttons">
+                {(['open', 'resolved', 'all'] as const).map(
+                  (status) => (
+                    <button
+                      type="button"
+                      className={`filter-button ${
+                        hostFindingStatus === status
+                          ? 'selected'
+                          : ''
+                      }`}
+                      key={status}
+                      onClick={() =>
+                        setHostFindingStatus(status)
+                      }
+                    >
+                      {status}
+                    </button>
+                  ),
+                )}
+              </div>
+            </div>
+          </div>
+
+          {visibleHostFindings.length === 0 ? (
             <div className="host-findings-empty">
-              No findings for this host.
+              {findings.length === 0
+                ? 'No findings for this host.'
+                : `No ${hostFindingStatus} findings for this host.`}
             </div>
           ) : (
-            findings.map((finding) => (
+            visibleHostFindings.map((finding) => (
               <article
                 className={`host-finding-row ${findingStatus(
                   finding.severity,
@@ -3049,8 +3197,31 @@ function HostDetail({
                     </span>
 
                     <span>{finding.service}</span>
-                    <span className="separator">·</span>
-                    <span>{finding.status}</span>
+
+                    <span className="separator">
+                      ·
+                    </span>
+
+                    <span>
+                      {finding.status === 'resolved'
+                        ? 'Resolved'
+                        : 'Open'}
+                    </span>
+
+                    {finding.status === 'resolved' &&
+                      finding.resolved_at && (
+                        <>
+                          <span className="separator">
+                            ·
+                          </span>
+
+                          <span>
+                            {formatAge(
+                              finding.resolved_at,
+                            )}
+                          </span>
+                        </>
+                      )}
                   </div>
 
                   <h3>{finding.title}</h3>
@@ -3058,11 +3229,58 @@ function HostDetail({
                   {finding.detail && (
                     <p>{finding.detail}</p>
                   )}
+
+                  <div className="finding-stats">
+                    <span>
+                      <strong>First seen</strong>
+                      {finding.first_seen
+                        ? formatAge(
+                            finding.first_seen,
+                          )
+                        : '—'}
+                    </span>
+
+                    <span>
+                      <strong>Last seen</strong>
+                      {finding.last_seen
+                        ? formatAge(
+                            finding.last_seen,
+                          )
+                        : '—'}
+                    </span>
+
+                    <span>
+                      <strong>Detections</strong>
+                      {finding.detection_count ?? 1}
+                    </span>
+                  </div>
                 </div>
 
-                <time>
-                  {formatAge(finding.received_at)}
-                </time>
+                <div className="finding-host-side">
+                  {finding.status === 'open' &&
+                    hasPermission(
+                      currentUser,
+                      'findings.resolve',
+                    ) && (
+                      <button
+                        className="resolve-button"
+                        disabled={
+                          resolvingHostFinding ===
+                          finding.id
+                        }
+                        onClick={() =>
+                          void resolveHostFinding(
+                            finding.id,
+                          )
+                        }
+                      >
+                        {resolvingHostFinding ===
+                        finding.id
+                          ? 'Resolving...'
+                          : 'Resolve'}
+                      </button>
+                    )}
+                </div>
               </article>
             ))
           )}
@@ -3676,29 +3894,41 @@ function Findings({
                         </div>
 
                         <div className="finding-host-side">
-                          {finding.status ===
-                            'open' &&
+                          {finding.status === 'resolved' ? (
+                            <div className="finding-resolved-state">
+                              <strong>Resolved</strong>
+
+                              {finding.resolved_at && (
+                                <span>
+                                  {formatAge(
+                                    finding.resolved_at,
+                                  )}
+                                </span>
+                              )}
+                            </div>
+                          ) : (
                             hasPermission(
                               currentUser,
                               'findings.resolve',
                             ) && (
-                            <button
-                              className="resolve-button"
-                              disabled={
-                                resolvingFinding ===
+                              <button
+                                className="resolve-button"
+                                disabled={
+                                  resolvingFinding ===
+                                  finding.id
+                                }
+                                onClick={() =>
+                                  void resolveFinding(
+                                    finding.id,
+                                  )
+                                }
+                              >
+                                {resolvingFinding ===
                                 finding.id
-                              }
-                              onClick={() =>
-                                void resolveFinding(
-                                  finding.id,
-                                )
-                              }
-                            >
-                              {resolvingFinding ===
-                              finding.id
-                                ? 'Resolving...'
-                                : 'Resolve'}
-                            </button>
+                                  ? 'Resolving...'
+                                  : 'Resolve'}
+                              </button>
+                            )
                           )}
                         </div>
                       </div>
@@ -4785,12 +5015,18 @@ function Packs({
 
                     <span
                       className={`pack-status-text ${
-                        pack.enabled
-                          ? "enabled"
-                          : "disabled"
+                        getPackStatus(pack).className
                       }`}
+                      title={
+                        pack.blocked_reason === "policy"
+                          ? "Blocked by pack policy"
+                          : pack.blocked_reason ===
+                              "server_incompatible"
+                            ? "Not compatible with this FERPEK Server version"
+                            : undefined
+                      }
                     >
-                      {pack.enabled ? "Enabled" : "Disabled"}
+                      {getPackStatus(pack).label}
                     </span>
 
                     {pack.overridden && (
@@ -9201,6 +9437,30 @@ function AuthGate() {
 
   const [currentUser, setCurrentUser] =
     useState<CurrentUser | null>(null)
+
+  useEffect(() => {
+    if (mode !== 'authenticated') {
+      return
+    }
+
+    const originalFetch = window.fetch.bind(window)
+
+    window.fetch = async (...args) => {
+      const response = await originalFetch(...args)
+
+      if (response.status === 401) {
+        setCurrentUser(null)
+        setMode('login')
+        navigate('/', { replace: true })
+      }
+
+      return response
+    }
+
+    return () => {
+      window.fetch = originalFetch
+    }
+  }, [mode, navigate])
 
   async function completeAuthentication() {
     try {
