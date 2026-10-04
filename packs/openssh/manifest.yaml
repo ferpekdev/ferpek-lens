@@ -1,6 +1,6 @@
 id: openssh
 name: OpenSSH
-version: 0.1.0
+version: 0.2.0
 author: FERPEK
 description: Detection and interpretation of OpenSSH authentication events.
 
@@ -12,7 +12,30 @@ sources:
   - authentication
   - auth-file
 
+platforms:
+  linux:
+    sources:
+      - id: authentication
+        discovery:
+          - type: journal
+            units:
+              - ssh.service
+              - sshd.service
+
+          - type: file
+            paths:
+              - /var/log/auth.log
+              - /var/log/secure
+
+        manual:
+          fields:
+            - id: log_path
+              label: Log file
+              type: path
+              required: true
+
 origin: official
+
 category:
   id: security
   label: Security

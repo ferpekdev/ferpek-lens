@@ -248,6 +248,11 @@ function GlobalTooltip() {
     document.addEventListener('mouseout', handleMouseOut)
     document.addEventListener('focusin', handleFocusIn)
     document.addEventListener('focusout', hideTooltip)
+    document.addEventListener(
+      'click',
+      hideTooltip,
+      true,
+    )
 
     window.addEventListener('scroll', hideTooltip, true)
     window.addEventListener('resize', hideTooltip)
@@ -257,6 +262,11 @@ function GlobalTooltip() {
       document.removeEventListener('mouseout', handleMouseOut)
       document.removeEventListener('focusin', handleFocusIn)
       document.removeEventListener('focusout', hideTooltip)
+      document.removeEventListener(
+        'click',
+        hideTooltip,
+        true,
+      )
 
       window.removeEventListener('scroll', hideTooltip, true)
       window.removeEventListener('resize', hideTooltip)
@@ -684,7 +694,10 @@ function Sidebar({
       setCurrentPassword('')
       setNewPassword('')
       setConfirmPassword('')
-      setPasswordMessage('Password changed successfully.')
+      showToast(
+        'Password changed successfully.',
+        'success',
+      )
     } catch (error) {
       setPasswordError(
         error instanceof Error
@@ -2412,8 +2425,82 @@ function HostDetail({
 }: {
   currentUser: CurrentUser
 }) {
-  type HostTab = 'overview' | 'logs' | 'findings' | 'sources'
+  type HostTab =
+    | 'overview'
+    | 'logs'
+    | 'findings'
+    | 'packs'
+    | 'sources'
+
   type LogMode = 'relevant' | 'raw'
+
+  type HostPackSource = {
+    source_id: string
+    detected: boolean
+    source_type: string
+    source_value: string
+    checked_at: number
+  }
+
+  type HostPackConfigurationField = {
+    id: string
+    label: string
+    type:
+      | 'text'
+      | 'path'
+      | 'number'
+      | 'boolean'
+      | 'select'
+      | 'secret'
+    required?: boolean
+    options?: Array<
+      | string
+      | {
+          value: string
+          label?: string
+        }
+    >
+  }
+
+  type HostPackConfigurationSource = {
+    source_id: string
+    fields: HostPackConfigurationField[]
+  }
+
+  type HostPack = {
+    id: string
+    name: string
+    version: string
+    origin: string
+    category: {
+      id: string
+      label: string
+    }
+    globally_enabled: boolean
+    allowed: boolean
+    server_compatible: boolean
+    agent_compatible: boolean
+    platform_supported: boolean
+    assigned: boolean
+    enabled: boolean
+    config: Record<string, unknown>
+    configuration_schema: HostPackConfigurationSource[]
+    discovery_status:
+      | 'detected'
+      | 'configured'
+      | 'needs_configuration'
+      | 'unavailable'
+      | 'unknown'
+    can_activate: boolean
+    activation_reason: string | null
+    discovery_checked_at: number | null
+    detected_sources: HostPackSource[]
+  }
+
+  type HostPackResponse = {
+    agent_id: number
+    packs: HostPack[]
+  }
 
   type LogSource = {
     id: number
@@ -2543,6 +2630,21 @@ function HostDetail({
     useState<number | null>(null)
   const [sources, setSources] = useState<LogSource[]>([])
   const [sourceDrafts, setSourceDrafts] = useState<LogSource[]>([])
+  const [hostPacks, setHostPacks] = useState<HostPack[]>([])
+  const [hostPacksError, setHostPacksError] = useState('')
+  const [hostPackChanging, setHostPackChanging] =
+    useState<string | null>(null)
+  const [configuringHostPack, setConfiguringHostPack] =
+    useState<HostPack | null>(null)
+  const [hostPackConfigDraft, setHostPackConfigDraft] =
+    useState<Record<string, Record<string, unknown>>>({})
+  const [hostPackConfigSaving, setHostPackConfigSaving] =
+    useState(false)
+  const [hostPackConfigError, setHostPackConfigError] =
+    useState('')
+  const [hostPackFilter, setHostPackFilter] =
+    useState<'all' | 'active' | 'available' | 'unavailable'>('all')
+  const [hostPackSearch, setHostPackSearch] = useState('')
   const [sourcesDirty, setSourcesDirty] = useState(false)
   const [savingSources, setSavingSources] = useState(false)
   const [sourcesSaveMessage, setSourcesSaveMessage] = useState('')
@@ -2555,11 +2657,285 @@ function HostDetail({
 
   const [loading, setLoading] = useState(true)
 
+  const activeHostPacks = hostPacks.filter(
+    (pack) =>
+      pack.enabled &&
+      pack.can_activate,
+  )
+
+  const availableHostPacks = hostPacks.filter(
+    (pack) =>
+      !(pack.enabled && pack.can_activate) &&
+      pack.discovery_status !== 'unavailable',
+  )
+
+  const unavailableHostPacks = hostPacks.filter(
+    (pack) =>
+      pack.discovery_status === 'unavailable',
+  )
+
+  const normalizedHostPackSearch =
+    hostPackSearch.trim().toLowerCase()
+
+  const filteredHostPacks = hostPacks
+    .filter((pack) => {
+      const active =
+        pack.enabled &&
+        pack.can_activate
+
+      const unavailable =
+        pack.discovery_status === 'unavailable'
+
+      const available =
+        !active &&
+        !unavailable
+
+      if (
+        hostPackFilter === 'active' &&
+        !active
+      ) {
+        return false
+      }
+
+      if (
+        hostPackFilter === 'available' &&
+        !available
+      ) {
+        return false
+      }
+
+      if (
+        hostPackFilter === 'unavailable' &&
+        !unavailable
+      ) {
+        return false
+      }
+
+      if (!normalizedHostPackSearch) {
+        return true
+      }
+
+      const category =
+        pack.category?.label ?? ''
+
+      return (
+        pack.name
+          .toLowerCase()
+          .includes(normalizedHostPackSearch) ||
+        pack.id
+          .toLowerCase()
+          .includes(normalizedHostPackSearch) ||
+        category
+          .toLowerCase()
+          .includes(normalizedHostPackSearch)
+      )
+    })
+    .sort((left, right) => {
+      const leftActive =
+        left.enabled &&
+        left.can_activate
+
+      const rightActive =
+        right.enabled &&
+        right.can_activate
+
+      const rank = (pack: HostPack) => {
+        if (
+          pack.discovery_status ===
+          'needs_configuration'
+        ) {
+          return 0
+        }
+
+        if (
+          !pack.enabled &&
+          pack.can_activate
+        ) {
+          return 1
+        }
+
+        if (
+          pack.enabled &&
+          pack.can_activate
+        ) {
+          return 2
+        }
+
+        if (
+          pack.discovery_status ===
+          'unavailable'
+        ) {
+          return 3
+        }
+
+        return 4
+      }
+
+      const rankDifference =
+        rank(left) - rank(right)
+
+      if (rankDifference !== 0) {
+        return rankDifference
+      }
+
+      if (
+        leftActive !== rightActive
+      ) {
+        return leftActive ? -1 : 1
+      }
+
+      return left.name.localeCompare(
+        right.name,
+      )
+    })
+
   const visibleHostFindings = findings.filter(
     (finding) =>
       hostFindingStatus === 'all' ||
       finding.status === hostFindingStatus,
   )
+
+  function renderHostPackRow(pack: HostPack) {
+    const active =
+      pack.enabled &&
+      pack.can_activate
+
+    let statusLabel = 'Legacy'
+
+    if (pack.discovery_status === 'detected') {
+      statusLabel = 'Detected automatically'
+    } else if (
+      pack.discovery_status === 'configured'
+    ) {
+      statusLabel = 'Configured manually'
+    } else if (
+      pack.discovery_status ===
+      'needs_configuration'
+    ) {
+      statusLabel = 'Needs configuration'
+    } else if (
+      pack.discovery_status === 'unavailable'
+    ) {
+      statusLabel = 'Unavailable'
+    }
+
+    return (
+      <div
+        className={`host-pack-row ${
+          pack.discovery_status === 'unavailable'
+            ? 'unavailable'
+            : ''
+        }`}
+        key={pack.id}
+      >
+        <div className="host-pack-main">
+          <div className="host-pack-title">
+            <strong>{pack.name}</strong>
+
+            <span className="host-pack-version">
+              v{pack.version}
+            </span>
+
+            {pack.category?.label && (
+              <span className="host-pack-category">
+                {pack.category.label}
+              </span>
+            )}
+          </div>
+
+          <div className="host-pack-status">
+            <span
+              className={`host-pack-state ${
+                pack.discovery_status
+              }`}
+            >
+              {statusLabel}
+            </span>
+
+            {pack.detected_sources
+              .filter(
+                (source) => source.detected,
+              )
+              .map((source) => (
+                <span
+                  className="host-pack-source"
+                  key={source.source_id}
+                >
+                  {source.source_type === 'journal'
+                    ? `Journald · ${source.source_value}`
+                    : source.source_value}
+                </span>
+              ))}
+          </div>
+        </div>
+
+        <div className="host-pack-side">
+          <span
+            className={`host-pack-active ${
+              active ? 'active' : 'inactive'
+            }`}
+          >
+            {active ? 'Active' : 'Inactive'}
+          </span>
+
+          {hasPermission(
+            currentUser,
+            'hosts.manage',
+          ) && (
+            <div className="host-pack-actions">
+              {pack.configuration_schema.length > 0 && (
+                <button
+                  type="button"
+                  className="host-icon-button pack-state-action tooltip"
+                  data-tooltip="Configure"
+                  disabled={
+                    hostPackChanging === pack.id
+                  }
+                  onClick={() =>
+                    openHostPackConfig(pack)
+                  }
+                >
+                  ⚙
+                </button>
+              )}
+
+              <button
+                type="button"
+                className={`host-icon-button pack-state-action tooltip ${
+                  active ? 'disable' : 'enable'
+                }`}
+                data-tooltip={
+                  active
+                    ? 'Disable pack'
+                    : pack.can_activate
+                      ? 'Activate pack'
+                      : pack.discovery_status ===
+                          'needs_configuration'
+                        ? 'Configure this pack first'
+                        : 'Pack unavailable'
+                }
+                disabled={
+                  hostPackChanging === pack.id ||
+                  (!active && !pack.can_activate)
+                }
+                onClick={() =>
+                  void setHostPackEnabled(
+                    pack,
+                    !active,
+                  )
+                }
+              >
+                {hostPackChanging === pack.id
+                  ? '…'
+                  : '⏻'}
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
 
   async function loadHostData() {
     try {
@@ -2569,12 +2945,14 @@ function HostDetail({
         relevantResponse,
         findingsResponse,
         sourcesResponse,
+        packsResponse,
       ] = await Promise.all([
         fetch('/api/v1/agents'),
         fetch(`/api/v1/events?agent_id=${agentId}&limit=200`),
         fetch(`/api/v1/relevant?agent_id=${agentId}&limit=200`),
         fetch(`/api/v1/findings?agent_id=${agentId}&limit=200`),
         fetch(`/api/v1/agents/${agentId}/sources`),
+        fetch(`/api/v1/agents/${agentId}/packs`),
       ])
 
       if (!agentsResponse.ok) {
@@ -2611,6 +2989,18 @@ function HostDetail({
       setRelevantApiEvents(relevantData)
       setSources(sourcesData)
 
+      if (packsResponse.ok) {
+        const packsData: HostPackResponse =
+          await packsResponse.json()
+
+        setHostPacks(packsData.packs)
+        setHostPacksError('')
+      } else {
+        setHostPacksError(
+          `Could not load packs (${packsResponse.status}).`,
+        )
+      }
+
       setSourceDrafts((current) =>
         current.length === 0 ? sourcesData : current,
       )
@@ -2626,6 +3016,216 @@ function HostDetail({
       setLoading(false)
     }
   }
+
+  function openHostPackConfig(pack: HostPack) {
+    const currentSources =
+      pack.config &&
+      typeof pack.config === 'object' &&
+      !Array.isArray(pack.config) &&
+      typeof pack.config.sources === 'object' &&
+      pack.config.sources !== null &&
+      !Array.isArray(pack.config.sources)
+        ? pack.config.sources as Record<
+            string,
+            Record<string, unknown>
+          >
+        : {}
+
+    setHostPackConfigDraft(
+      JSON.parse(
+        JSON.stringify(currentSources),
+      ),
+    )
+    setHostPackConfigError('')
+    setConfiguringHostPack(pack)
+  }
+
+  function setHostPackConfigValue(
+    sourceId: string,
+    fieldId: string,
+    value: unknown,
+  ) {
+    setHostPackConfigDraft((current) => ({
+      ...current,
+      [sourceId]: {
+        ...(current[sourceId] ?? {}),
+        [fieldId]: value,
+      },
+    }))
+  }
+
+  async function saveHostPackConfig() {
+    if (
+      !configuringHostPack ||
+      !hasPermission(currentUser, 'hosts.manage')
+    ) {
+      return
+    }
+
+    for (
+      const source
+      of configuringHostPack.configuration_schema
+    ) {
+      for (const field of source.fields) {
+        if (!field.required) {
+          continue
+        }
+
+        const value =
+          hostPackConfigDraft[source.source_id]?.[
+            field.id
+          ]
+
+        const missing =
+          value === undefined ||
+          value === null ||
+          value === ''
+
+        if (missing) {
+          setHostPackConfigError(
+            `${field.label} is required.`,
+          )
+          return
+        }
+      }
+    }
+
+    setHostPackConfigSaving(true)
+    setHostPackConfigError('')
+
+    try {
+      const existingConfig =
+        configuringHostPack.config &&
+        typeof configuringHostPack.config === 'object' &&
+        !Array.isArray(configuringHostPack.config)
+          ? configuringHostPack.config
+          : {}
+
+      const response = await fetch(
+        `/api/v1/agents/${agentId}/packs/${encodeURIComponent(
+          configuringHostPack.id,
+        )}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            enabled:
+              configuringHostPack.enabled &&
+              configuringHostPack.can_activate,
+            config: {
+              ...existingConfig,
+              sources: hostPackConfigDraft,
+            },
+          }),
+        },
+      )
+
+      if (!response.ok) {
+        let detail = `Server returned ${response.status}`
+
+        try {
+          const body = await response.json()
+
+          if (typeof body?.detail === 'string') {
+            detail = body.detail
+          }
+        } catch {
+          // Keep generic error.
+        }
+
+        throw new Error(detail)
+      }
+
+      const packName = configuringHostPack.name
+
+      setConfiguringHostPack(null)
+      await loadHostData()
+
+      showToast(
+        `${packName} configuration saved.`,
+        'success',
+      )
+    } catch (err) {
+      setHostPackConfigError(
+        err instanceof Error
+          ? err.message
+          : 'Could not configure pack.',
+      )
+    } finally {
+      setHostPackConfigSaving(false)
+    }
+  }
+
+
+  async function setHostPackEnabled(
+    pack: HostPack,
+    enabled: boolean,
+  ) {
+    if (!hasPermission(currentUser, 'hosts.manage')) {
+      return
+    }
+
+    setHostPackChanging(pack.id)
+    setHostPacksError('')
+
+    try {
+      const response = await fetch(
+        `/api/v1/agents/${agentId}/packs/${encodeURIComponent(
+          pack.id,
+        )}`,
+        {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            enabled,
+            config: pack.config ?? {},
+          }),
+        },
+      )
+
+      if (!response.ok) {
+        let detail = `Server returned ${response.status}`
+
+        try {
+          const body = await response.json()
+
+          if (typeof body?.detail === 'string') {
+            detail = body.detail
+          }
+        } catch {
+          // Keep generic error.
+        }
+
+        throw new Error(detail)
+      }
+
+      await loadHostData()
+
+      showToast(
+        enabled
+          ? `${pack.name} activated.`
+          : `${pack.name} disabled.`,
+        'success',
+      )
+    } catch (err) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Could not update pack.'
+
+      showToast(
+        message,
+        'error',
+      )
+    } finally {
+      setHostPackChanging(null)
+    }
+  }
+
 
   async function resolveHostFinding(
     findingId: number,
@@ -2741,7 +3341,10 @@ function HostDetail({
 
     if (changed.length === 0) {
       setSourcesDirty(false)
-      setSourcesSaveMessage('No changes to save.')
+      showToast(
+        'No changes to save.',
+        'info',
+      )
       return
     }
 
@@ -2774,7 +3377,10 @@ function HostDetail({
 
       setSources(sourceDrafts)
       setSourcesDirty(false)
-      setSourcesSaveMessage('Changes saved.')
+      showToast(
+        'Changes saved.',
+        'success',
+      )
     } catch (err) {
       console.error('Could not save source changes:', err)
       setSourcesSaveError(
@@ -2890,14 +3496,14 @@ function HostDetail({
           </div>
 
           <div className="host-summary-stat">
-            <strong>{hostSources.length}</strong>
-            <span>Monitored sources</span>
+            <strong>{activeHostPacks.length}</strong>
+            <span>Active packs</span>
           </div>
         </div>
       </div>
 
       <div className="host-tabs">
-        {(['overview', 'logs', 'findings', 'sources'] as const).map(
+        {(['overview', 'logs', 'findings', 'packs'] as const).map(
           (tab) => (
             <button
               key={tab}
@@ -3284,6 +3890,306 @@ function HostDetail({
               </article>
             ))
           )}
+        </div>
+      )}
+
+      {activeTab === 'packs' && (
+        <div className="host-packs">
+          <div className="host-packs-header">
+            <div>
+              <h3>Monitoring packs</h3>
+              <p>
+                Packs available for this host and their
+                current state.
+              </p>
+            </div>
+          </div>
+
+          {hostPacksError && (
+            <div className="modal-error">
+              {hostPacksError}
+            </div>
+          )}
+
+          <div className="host-pack-toolbar">
+            <div className="filter-buttons">
+              {(
+                [
+                  ['all', 'All', hostPacks.length],
+                  [
+                    'active',
+                    'Active',
+                    activeHostPacks.length,
+                  ],
+                  [
+                    'available',
+                    'Available',
+                    availableHostPacks.length,
+                  ],
+                  [
+                    'unavailable',
+                    'Unavailable',
+                    unavailableHostPacks.length,
+                  ],
+                ] as const
+              ).map(
+                ([value, label, count]) => (
+                  <button
+                    type="button"
+                    key={value}
+                    className={`filter-button ${
+                      hostPackFilter === value
+                        ? 'selected'
+                        : ''
+                    }`}
+                    onClick={() =>
+                      setHostPackFilter(value)
+                    }
+                  >
+                    {label}
+                    <span className="host-pack-filter-count">
+                      {count}
+                    </span>
+                  </button>
+                ),
+              )}
+            </div>
+
+            <input
+              type="search"
+              className="host-pack-search"
+              placeholder="Search packs..."
+              value={hostPackSearch}
+              onChange={(event) =>
+                setHostPackSearch(
+                  event.target.value,
+                )
+              }
+            />
+          </div>
+
+          <div className="host-pack-list">
+            {hostPacks.length === 0 ? (
+              <div className="empty-state">
+                No packs are available for this host.
+              </div>
+            ) : filteredHostPacks.length === 0 ? (
+              <div className="host-pack-empty">
+                No packs match this view.
+              </div>
+            ) : (
+              filteredHostPacks.map(
+                renderHostPackRow,
+              )
+            )}
+          </div>
+        </div>
+      )}
+
+      {configuringHostPack && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (
+              event.target === event.currentTarget &&
+              !hostPackConfigSaving
+            ) {
+              setConfiguringHostPack(null)
+            }
+          }}
+        >
+          <div className="modal host-pack-config-modal">
+            <div className="modal-header">
+              <div>
+                <h2>Configure {configuringHostPack.name}</h2>
+                <p>
+                  Configure this pack for this host.
+                </p>
+              </div>
+
+              <button
+                type="button"
+                className="modal-close"
+                disabled={hostPackConfigSaving}
+                onClick={() =>
+                  setConfiguringHostPack(null)
+                }
+              >
+                ×
+              </button>
+            </div>
+
+            <div className="host-pack-config-fields">
+              {configuringHostPack.configuration_schema.map(
+                (source) => (
+                  <div
+                    className="host-pack-config-source"
+                    key={source.source_id}
+                  >
+                    {configuringHostPack.configuration_schema
+                      .length > 1 && (
+                      <div className="host-pack-config-source-title">
+                        {source.source_id}
+                      </div>
+                    )}
+
+                    {source.fields.map((field) => {
+                      const value =
+                        hostPackConfigDraft[
+                          source.source_id
+                        ]?.[field.id]
+
+                      if (field.type === 'boolean') {
+                        return (
+                          <label
+                            className="host-pack-config-field boolean"
+                            key={field.id}
+                          >
+                            <span>{field.label}</span>
+
+                            <input
+                              type="checkbox"
+                              checked={Boolean(value)}
+                              onChange={(event) =>
+                                setHostPackConfigValue(
+                                  source.source_id,
+                                  field.id,
+                                  event.target.checked,
+                                )
+                              }
+                            />
+                          </label>
+                        )
+                      }
+
+                      if (field.type === 'select') {
+                        return (
+                          <label
+                            className="host-pack-config-field"
+                            key={field.id}
+                          >
+                            <span>
+                              {field.label}
+                              {field.required ? ' *' : ''}
+                            </span>
+
+                            <select
+                              value={String(value ?? '')}
+                              required={field.required}
+                              onChange={(event) =>
+                                setHostPackConfigValue(
+                                  source.source_id,
+                                  field.id,
+                                  event.target.value,
+                                )
+                              }
+                            >
+                              <option value="">
+                                Select...
+                              </option>
+
+                              {(field.options ?? []).map(
+                                (option) => {
+                                  const optionValue =
+                                    typeof option === 'string'
+                                      ? option
+                                      : option.value
+
+                                  const optionLabel =
+                                    typeof option === 'string'
+                                      ? option
+                                      : option.label ??
+                                        option.value
+
+                                  return (
+                                    <option
+                                      key={optionValue}
+                                      value={optionValue}
+                                    >
+                                      {optionLabel}
+                                    </option>
+                                  )
+                                },
+                              )}
+                            </select>
+                          </label>
+                        )
+                      }
+
+                      return (
+                        <label
+                          className="host-pack-config-field"
+                          key={field.id}
+                        >
+                          <span>
+                            {field.label}
+                            {field.required ? ' *' : ''}
+                          </span>
+
+                          <input
+                            type={
+                              field.type === 'secret'
+                                ? 'password'
+                                : field.type === 'number'
+                                  ? 'number'
+                                  : 'text'
+                            }
+                            value={String(value ?? '')}
+                            required={field.required}
+                            onChange={(event) =>
+                              setHostPackConfigValue(
+                                source.source_id,
+                                field.id,
+                                field.type === 'number'
+                                  ? event.target.value === ''
+                                    ? ''
+                                    : Number(
+                                        event.target.value,
+                                      )
+                                  : event.target.value,
+                              )
+                            }
+                          />
+                        </label>
+                      )
+                    })}
+                  </div>
+                ),
+              )}
+            </div>
+
+            {hostPackConfigError && (
+              <div className="modal-error">
+                {hostPackConfigError}
+              </div>
+            )}
+
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={hostPackConfigSaving}
+                onClick={() =>
+                  setConfiguringHostPack(null)
+                }
+              >
+                Cancel
+              </button>
+
+              <button
+                type="button"
+                className="primary-button"
+                disabled={hostPackConfigSaving}
+                onClick={() =>
+                  void saveHostPackConfig()
+                }
+              >
+                {hostPackConfigSaving
+                  ? 'Saving...'
+                  : 'Save'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -7525,11 +8431,12 @@ function LDAPSettingsPage() {
         )
       }
 
-      setMessage(
+      showToast(
         data?.message ||
           (providerType === 'active_directory'
             ? 'Active Directory connection successful.'
             : 'LDAP connection successful.'),
+        'success',
       )
     } catch (err) {
       setError(
@@ -7587,9 +8494,10 @@ function LDAPSettingsPage() {
       }
 
       setTestUserResult(data.user ?? null)
-      setTestUserMessage(
+      showToast(
         data?.message ||
           'LDAP user authentication successful.',
+        'success',
       )
       setTestPassword('')
     } catch (err) {
@@ -7683,10 +8591,11 @@ function LDAPSettingsPage() {
         Boolean(data.bind_password_configured),
       )
 
-      setMessage(
+      showToast(
         providerType === 'active_directory'
           ? 'Active Directory settings saved.'
           : 'LDAP settings saved.',
+        'success',
       )
     } catch (err) {
       setError(
@@ -8382,12 +9291,14 @@ function Settings({
         )
       }
 
-      setPackSettingsMessage(
+      showToast(
         "Pack settings saved.",
+        'success',
       )
     } catch (error) {
-      setPackSettingsError(
+      showToast(
         "Could not save pack settings.",
+        'error',
       )
     } finally {
       setPackSettingsSaving(false)
@@ -8429,12 +9340,14 @@ function Settings({
         )
       }
 
-      setRetentionMessage(
+      showToast(
         "Retention settings saved.",
+        'success',
       )
     } catch (error) {
-      setRetentionError(
+      showToast(
         "Could not save retention settings.",
+        'error',
       )
     } finally {
       setRetentionSaving(false)
@@ -8918,8 +9831,10 @@ function Layout({
 }) {
   const location = useLocation()
 
+  const themeStorageKey = `ferpek-theme:${currentUser.id}`
+
   const [theme, setTheme] = useState<ThemePreference>(() => {
-    const stored = localStorage.getItem('ferpek-theme')
+    const stored = localStorage.getItem(themeStorageKey)
 
     if (
       stored === 'light' ||
@@ -8950,7 +9865,10 @@ function Layout({
     }
 
     applyTheme()
-    localStorage.setItem('ferpek-theme', theme)
+    localStorage.setItem(
+      themeStorageKey,
+      theme,
+    )
 
     if (theme === 'system') {
       media.addEventListener('change', applyTheme)
@@ -8959,7 +9877,7 @@ function Layout({
         media.removeEventListener('change', applyTheme)
       }
     }
-  }, [theme])
+  }, [theme, themeStorageKey])
   const info = location.pathname.startsWith('/systems/')
     ? {
         title: 'Host',

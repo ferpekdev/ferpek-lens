@@ -1,6 +1,6 @@
 id: nginx
 name: Nginx
-version: 0.2.0
+version: 0.3.0
 author: FERPEK
 description: Detection and interpretation of Nginx HTTP access events.
 
@@ -17,3 +17,19 @@ compatibility:
 sources:
   - nginx-access
   - web-access
+
+platforms:
+  linux:
+    sources:
+      - id: nginx-access
+        family: web-access
+        discovery:
+          - type: file
+            paths:
+              - /var/log/nginx/access.log
+        manual:
+          fields:
+            - id: log_path
+              label: Access log
+              type: path
+              required: true

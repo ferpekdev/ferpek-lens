@@ -297,6 +297,26 @@ class PackEngine:
                 "Rule has no id"
             )
 
+        pack_id = manifest.get(
+            "id",
+            "unknown",
+        )
+
+        if not str(rule_id).startswith(
+            f"{pack_id}."
+        ):
+            raise ValueError(
+                f"{rule_id}: rule id must start with {pack_id}."
+            )
+
+        if any(
+            existing.get("id") == rule_id
+            for existing in self.rules
+        ):
+            raise ValueError(
+                f"{rule_id}: duplicate rule id"
+            )
+
         sources = rule.get("sources", [])
         source_family = rule.get("source_family")
 

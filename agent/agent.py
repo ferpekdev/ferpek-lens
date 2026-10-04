@@ -21,6 +21,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
+import yaml
+
 VERSION = "0.5.0"
 
 SERVER_URL = os.environ.get(
@@ -803,6 +805,9 @@ def spool_counts():
     return pending, outbox
 
 
+DYNAMIC_SOURCE_FAMILIES = {}
+
+
 SOURCE_FAMILIES = {
     "authentication": "authentication",
     "auth-file": "authentication",
@@ -826,7 +831,94 @@ SOURCE_FAMILIES = {
 }
 
 
+def load_pack_source_families():
+    families = {}
+
+    if not PACKS_DIR.exists():
+        return families
+
+    for pack_dir in PACKS_DIR.iterdir():
+        if not pack_dir.is_dir():
+            continue
+
+        manifest_path = pack_dir / "manifest.yaml"
+
+        if not manifest_path.is_file():
+            continue
+
+        try:
+            manifest = yaml.safe_load(
+                manifest_path.read_text(
+                    encoding="utf-8"
+                )
+            )
+        except Exception as exc:
+            log(
+                f"Could not read pack family metadata "
+                f"from {pack_dir.name}: {exc}"
+            )
+            continue
+
+        if not isinstance(manifest, dict):
+            continue
+
+        platforms = manifest.get(
+            "platforms",
+            {},
+        )
+
+        if not isinstance(platforms, dict):
+            continue
+
+        for platform_config in platforms.values():
+            if not isinstance(
+                platform_config,
+                dict,
+            ):
+                continue
+
+            sources = platform_config.get(
+                "sources",
+                [],
+            )
+
+            if not isinstance(sources, list):
+                continue
+
+            for source in sources:
+                if not isinstance(source, dict):
+                    continue
+
+                source_id = str(
+                    source.get("id", "")
+                ).strip()
+
+                family = str(
+                    source.get("family", "")
+                ).strip()
+
+                if source_id and family:
+                    families[source_id] = family
+
+    return families
+
+
+def refresh_pack_source_families():
+    global DYNAMIC_SOURCE_FAMILIES
+
+    DYNAMIC_SOURCE_FAMILIES = (
+        load_pack_source_families()
+    )
+
+    return DYNAMIC_SOURCE_FAMILIES
+
+
 def source_family(source_key):
+    if source_key in DYNAMIC_SOURCE_FAMILIES:
+        return DYNAMIC_SOURCE_FAMILIES[
+            source_key
+        ]
+
     return SOURCE_FAMILIES.get(
         source_key,
         source_key,
@@ -933,6 +1025,182 @@ def pack_directories_equal(left: Path, right: Path) -> bool:
             return False
 
     return True
+
+
+def get_pack_catalog(agent_key: str):
+    return api_request(
+        "GET",
+        "/api/v1/agent/pack-catalog",
+        agent_key=agent_key,
+    )
+
+
+def journal_unit_exists(unit: str) -> bool:
+    try:
+        result = subprocess.run(
+            [
+                "systemctl",
+                "show",
+                unit,
+                "--property=LoadState",
+                "--value",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    if result.returncode != 0:
+        return False
+
+    load_state = result.stdout.strip().lower()
+
+    return load_state not in {
+        "",
+        "not-found",
+    }
+
+
+def discover_pack_source(source: dict):
+    source_id = str(
+        source.get("id", "")
+    ).strip()
+
+    result = {
+        "source_id": source_id,
+        "detected": False,
+        "source_type": "",
+        "source_value": "",
+    }
+
+    discovery = source.get(
+        "discovery",
+        [],
+    )
+
+    if not isinstance(discovery, list):
+        return result
+
+    for candidate in discovery:
+        if not isinstance(candidate, dict):
+            continue
+
+        candidate_type = str(
+            candidate.get("type", "")
+        ).strip().lower()
+
+        if candidate_type == "journal":
+            for unit in candidate.get(
+                "units",
+                [],
+            ):
+                unit = str(unit).strip()
+
+                if not unit:
+                    continue
+
+                if journal_unit_exists(unit):
+                    result.update(
+                        {
+                            "detected": True,
+                            "source_type": "journal",
+                            "source_value": unit,
+                        }
+                    )
+
+                    return result
+
+        if candidate_type == "file":
+            for file_path in candidate.get(
+                "paths",
+                [],
+            ):
+                file_path = str(
+                    file_path
+                ).strip()
+
+                if not file_path:
+                    continue
+
+                if Path(file_path).is_file():
+                    result.update(
+                        {
+                            "detected": True,
+                            "source_type": "file",
+                            "source_value": file_path,
+                        }
+                    )
+
+                    return result
+
+    return result
+
+
+def discover_pack_catalog(agent_key: str):
+    catalog = get_pack_catalog(
+        agent_key
+    )
+
+    results = []
+
+    for pack in catalog.get(
+        "packs",
+        [],
+    ):
+        pack_id = str(
+            pack.get("id", "")
+        ).strip()
+
+        if not pack_id:
+            continue
+
+        source_results = []
+
+        for source in pack.get(
+            "sources",
+            [],
+        ):
+            if not isinstance(source, dict):
+                continue
+
+            source_results.append(
+                discover_pack_source(source)
+            )
+
+        detected = (
+            bool(source_results)
+            and all(
+                source["detected"]
+                for source in source_results
+            )
+        )
+
+        results.append(
+            {
+                "pack_id": pack_id,
+                "supported": True,
+                "detected": detected,
+                "sources": source_results,
+            }
+        )
+
+    response = api_request(
+        "POST",
+        "/api/v1/agent/pack-discovery",
+        {
+            "packs": results,
+        },
+        agent_key,
+    )
+
+    log(
+        f"Reported discovery for "
+        f"{response['received']} pack(s)"
+    )
+
+    return results
 
 
 def sync_packs(agent_key):
@@ -1102,6 +1370,7 @@ def get_os_info():
             "VERSION_ID",
             "",
         ),
+        "platform": platform.system().lower(),
     }
 
 
@@ -1176,6 +1445,7 @@ def enroll():
             "token": TOKEN,
             "os_name": os_info["os_name"],
             "os_version": os_info["os_version"],
+            "platform": os_info["platform"],
             "agent_version": VERSION,
         },
     )
@@ -1245,6 +1515,7 @@ def update_metadata(agent_key: str):
         {
             "os_name": os_info["os_name"],
             "os_version": os_info["os_version"],
+            "platform": os_info["platform"],
             "agent_version": VERSION,
             "machine_type": detect_machine_type(),
         },
@@ -2126,6 +2397,15 @@ def main():
     update_metadata(agent_key)
     discover_sources(agent_key)
 
+    try:
+        discover_pack_catalog(
+            agent_key
+        )
+    except Exception as exc:
+        log(
+            f"Could not discover packs: {exc}"
+        )
+
     config = get_config(agent_key)
 
     log(
@@ -2148,6 +2428,13 @@ def main():
         log(
             f"FERPEK Lens synchronized "
             f"{pack_count} pack(s)"
+        )
+
+        families = refresh_pack_source_families()
+
+        log(
+            f"Loaded {len(families)} "
+            f"pack source family mapping(s)"
         )
 
     except Exception as exc:
@@ -2246,11 +2533,29 @@ def main():
                     active_file_sources = current_file_sources
                     enabled_sources = new_enabled_sources
 
+                    try:
+                        discover_pack_catalog(
+                            agent_key
+                        )
+                    except Exception as exc:
+                        log(
+                            f"Could not discover packs: {exc}"
+                        )
+
                     pack_count, packs_changed = sync_packs(
                         agent_key
                     )
 
                     if packs_changed:
+                        families = (
+                            refresh_pack_source_families()
+                        )
+
+                        log(
+                            f"Loaded {len(families)} "
+                            f"pack source family mapping(s)"
+                        )
+
                         pack_engine.load()
 
                         loaded_rules = pack_engine.describe()

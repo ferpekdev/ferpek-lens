@@ -122,6 +122,9 @@ def init_db():
         if not column_exists(conn, "agents", "machine_type"):
             conn.execute("ALTER TABLE agents ADD COLUMN machine_type TEXT")
 
+        if not column_exists(conn, "agents", "platform"):
+            conn.execute("ALTER TABLE agents ADD COLUMN platform TEXT")
+
         conn.execute("""
             CREATE TABLE IF NOT EXISTS findings (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -506,6 +509,51 @@ def init_db():
                 updated_at INTEGER NOT NULL,
                 UNIQUE(agent_id, source_key),
                 FOREIGN KEY(agent_id) REFERENCES agents(id)
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_pack_assignments (
+                agent_id INTEGER NOT NULL,
+                pack_id TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                config_json TEXT NOT NULL DEFAULT '{}',
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY(agent_id, pack_id),
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+                    ON DELETE CASCADE
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_pack_discovery (
+                agent_id INTEGER NOT NULL,
+                pack_id TEXT NOT NULL,
+                supported INTEGER NOT NULL DEFAULT 0,
+                detected INTEGER NOT NULL DEFAULT 0,
+                source_id TEXT NOT NULL DEFAULT '',
+                source_type TEXT NOT NULL DEFAULT '',
+                source_value TEXT NOT NULL DEFAULT '',
+                checked_at INTEGER NOT NULL,
+                PRIMARY KEY(agent_id, pack_id),
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+                    ON DELETE CASCADE
+            )
+        """)
+
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS agent_pack_source_discovery (
+                agent_id INTEGER NOT NULL,
+                pack_id TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                detected INTEGER NOT NULL DEFAULT 0,
+                source_type TEXT NOT NULL DEFAULT '',
+                source_value TEXT NOT NULL DEFAULT '',
+                checked_at INTEGER NOT NULL,
+                PRIMARY KEY(agent_id, pack_id, source_id),
+                FOREIGN KEY(agent_id) REFERENCES agents(id)
+                    ON DELETE CASCADE
             )
         """)
 
@@ -1147,6 +1195,7 @@ class EnrollRequest(BaseModel):
     token: str
     os_name: str = ""
     os_version: str = ""
+    platform: str = ""
     agent_version: str = ""
 
 
@@ -1221,8 +1270,37 @@ class SourcesBatch(BaseModel):
 class AgentMetadata(BaseModel):
     os_name: str = ""
     os_version: str = ""
+    platform: str = ""
     agent_version: str = ""
     machine_type: str = ""
+
+
+class AgentPackAssignmentPayload(BaseModel):
+    enabled: bool = True
+    config: dict = Field(default_factory=dict)
+
+
+class AgentPackSourceDiscoveryResult(BaseModel):
+    source_id: str
+    detected: bool
+    source_type: str = ""
+    source_value: str = ""
+
+
+class AgentPackDiscoveryResult(BaseModel):
+    pack_id: str
+    supported: bool
+    detected: bool
+    sources: list[AgentPackSourceDiscoveryResult] = Field(
+        default_factory=list,
+        max_length=100,
+    )
+
+
+class AgentPackDiscoveryBatch(BaseModel):
+    packs: list[AgentPackDiscoveryResult] = Field(
+        max_length=200
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -3318,9 +3396,10 @@ def enroll(req: EnrollRequest):
                     last_seen,
                     os_name,
                     os_version,
+                    platform,
                     agent_version
                 )
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 req.hostname,
@@ -3329,6 +3408,7 @@ def enroll(req: EnrollRequest):
                 now,
                 req.os_name,
                 req.os_version,
+                req.platform,
                 req.agent_version,
             ),
         )
@@ -3371,6 +3451,7 @@ def update_agent_metadata(
             UPDATE agents
             SET os_name = ?,
                 os_version = ?,
+                platform = ?,
                 agent_version = ?,
                 machine_type = ?
             WHERE id = ?
@@ -3378,6 +3459,7 @@ def update_agent_metadata(
             (
                 metadata.os_name,
                 metadata.os_version,
+                metadata.platform,
                 metadata.agent_version,
                 metadata.machine_type,
                 agent["id"],
@@ -3503,6 +3585,812 @@ def get_agent_config(agent: dict = Depends(get_agent)):
             }
             for row in rows
         ],
+    }
+
+
+def is_pack_source_manual_config_valid(
+    source: dict,
+    config: dict,
+) -> bool:
+    manual = source.get("manual")
+
+    if not isinstance(manual, dict):
+        return False
+
+    fields = manual.get("fields", [])
+
+    if not isinstance(fields, list) or not fields:
+        return False
+
+    source_id = str(
+        source.get("id", "")
+    ).strip()
+
+    config_sources = config.get(
+        "sources",
+        {},
+    )
+
+    if not isinstance(config_sources, dict):
+        return False
+
+    source_config = config_sources.get(
+        source_id,
+        {},
+    )
+
+    if not isinstance(source_config, dict):
+        return False
+
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+
+        field_id = str(
+            field.get("id", "")
+        ).strip()
+
+        field_type = str(
+            field.get(
+                "type",
+                "text",
+            )
+        ).strip().lower()
+
+        required = bool(
+            field.get(
+                "required",
+                False,
+            )
+        )
+
+        value_present = (
+            field_id in source_config
+        )
+
+        value = source_config.get(
+            field_id
+        )
+
+        if required and not value_present:
+            return False
+
+        if not value_present:
+            continue
+
+        if field_type in {
+            "text",
+            "path",
+            "secret",
+        }:
+            if not isinstance(value, str):
+                return False
+
+            if required and not value.strip():
+                return False
+
+        elif field_type == "number":
+            if (
+                isinstance(value, bool)
+                or not isinstance(
+                    value,
+                    (int, float),
+                )
+            ):
+                return False
+
+        elif field_type == "boolean":
+            if not isinstance(
+                value,
+                bool,
+            ):
+                return False
+
+        elif field_type == "select":
+            options = field.get(
+                "options",
+                [],
+            )
+
+            if value not in options:
+                return False
+
+    return True
+
+
+def evaluate_pack_activation_readiness(
+    manifest: dict,
+    agent_platform: str,
+    discovery_by_source: dict,
+    config: dict,
+    discovery_checked: bool,
+):
+    platforms = manifest.get("platforms")
+
+    if not isinstance(platforms, dict):
+        return {
+            "status": "unknown",
+            "can_activate": True,
+            "reason": None,
+        }
+
+    platform_config = platforms.get(
+        agent_platform
+    )
+
+    if not isinstance(platform_config, dict):
+        return {
+            "status": "unavailable",
+            "can_activate": False,
+            "reason": "platform_not_supported",
+        }
+
+    sources = platform_config.get(
+        "sources",
+        [],
+    )
+
+    if not isinstance(sources, list):
+        return {
+            "status": "unknown",
+            "can_activate": True,
+            "reason": None,
+        }
+
+    has_declarative_source = False
+    used_manual_config = False
+
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+
+        source_id = str(
+            source.get("id", "")
+        ).strip()
+
+        if not source_id:
+            continue
+
+        discovery = source.get(
+            "discovery",
+            [],
+        )
+
+        has_discovery = (
+            isinstance(discovery, list)
+            and bool(discovery)
+        )
+
+        manual = source.get("manual")
+
+        has_manual = False
+
+        if isinstance(manual, dict):
+            fields = manual.get(
+                "fields",
+                [],
+            )
+
+            has_manual = (
+                isinstance(fields, list)
+                and bool(fields)
+            )
+
+        if not has_discovery and not has_manual:
+            continue
+
+        has_declarative_source = True
+
+        discovery_row = discovery_by_source.get(
+            source_id
+        )
+
+        if (
+            discovery_row is not None
+            and bool(discovery_row["detected"])
+        ):
+            continue
+
+        if is_pack_source_manual_config_valid(
+            source,
+            config,
+        ):
+            used_manual_config = True
+            continue
+
+        if has_discovery and not discovery_checked:
+            return {
+                "status": "unknown",
+                "can_activate": False,
+                "reason": "discovery_pending",
+            }
+
+        if has_manual:
+            return {
+                "status": "needs_configuration",
+                "can_activate": False,
+                "reason": (
+                    "source_requires_configuration:"
+                    f"{source_id}"
+                ),
+            }
+
+        return {
+            "status": "unavailable",
+            "can_activate": False,
+            "reason": (
+                "source_not_detected:"
+                f"{source_id}"
+            ),
+        }
+
+    if not has_declarative_source:
+        return {
+            "status": "unknown",
+            "can_activate": True,
+            "reason": None,
+        }
+
+    if used_manual_config:
+        return {
+            "status": "configured",
+            "can_activate": True,
+            "reason": None,
+        }
+
+    return {
+        "status": "detected",
+        "can_activate": True,
+        "reason": None,
+    }
+
+
+def get_pack_configuration_schema(
+    manifest: dict,
+    platform_name: str,
+):
+    platforms = manifest.get("platforms")
+
+    if not isinstance(platforms, dict):
+        return []
+
+    platform_config = platforms.get(platform_name)
+
+    if not isinstance(platform_config, dict):
+        return []
+
+    sources = platform_config.get("sources")
+
+    if not isinstance(sources, list):
+        return []
+
+    schema = []
+
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+
+        source_id = str(source.get("id") or "").strip()
+
+        if not source_id:
+            continue
+
+        manual = source.get("manual")
+
+        if not isinstance(manual, dict):
+            continue
+
+        fields = manual.get("fields")
+
+        if not isinstance(fields, list) or not fields:
+            continue
+
+        schema.append(
+            {
+                "source_id": source_id,
+                "fields": fields,
+            }
+        )
+
+    return schema
+
+
+@app.get(
+    "/api/v1/agents/{agent_id}/packs",
+    dependencies=[
+        Depends(require_permission("hosts.view"))
+    ],
+)
+def list_agent_packs(agent_id: int):
+    with db() as conn:
+        agent = conn.execute(
+            """
+            SELECT *
+            FROM agents
+            WHERE id = ?
+            """,
+            (agent_id,),
+        ).fetchone()
+
+        if agent is None:
+            raise HTTPException(
+                404,
+                "Host não encontrado",
+            )
+
+        assignments = {
+            row["pack_id"]: row
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM agent_pack_assignments
+                WHERE agent_id = ?
+                """,
+                (agent_id,),
+            ).fetchall()
+        }
+
+        discovery_rows = {
+            row["pack_id"]: row
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM agent_pack_discovery
+                WHERE agent_id = ?
+                """,
+                (agent_id,),
+            ).fetchall()
+        }
+
+        source_rows = conn.execute(
+            """
+            SELECT *
+            FROM agent_pack_source_discovery
+            WHERE agent_id = ?
+            ORDER BY pack_id, source_id
+            """,
+            (agent_id,),
+        ).fetchall()
+
+    discovered_sources = {}
+
+    for row in source_rows:
+        discovered_sources.setdefault(
+            row["pack_id"],
+            [],
+        ).append(
+            {
+                "source_id": row["source_id"],
+                "detected": bool(row["detected"]),
+                "source_type": row["source_type"],
+                "source_value": row["source_value"],
+                "checked_at": row["checked_at"],
+            }
+        )
+
+    packs = []
+
+    for pack_dir in iter_pack_dirs():
+        if not pack_dir.is_dir():
+            continue
+
+        if pack_dir.is_symlink():
+            continue
+
+        manifest = read_pack_manifest(pack_dir)
+
+        if manifest is None:
+            continue
+
+        pack_id = str(manifest["id"])
+        assignment = assignments.get(pack_id)
+
+        allowed = is_pack_allowed(manifest)
+        globally_enabled = is_pack_enabled(pack_id)
+        server_compatible = (
+            is_pack_server_compatible(manifest)
+        )
+        agent_compatible = (
+            is_pack_agent_compatible(
+                manifest,
+                str(
+                    agent["agent_version"]
+                    or ""
+                ),
+            )
+        )
+        platform_supported = (
+            is_pack_platform_compatible(
+                manifest,
+                str(
+                    agent["platform"]
+                    or ""
+                ),
+            )
+        )
+
+        config = {}
+
+        if assignment is not None:
+            try:
+                parsed = json.loads(
+                    assignment["config_json"]
+                    or "{}"
+                )
+
+                if isinstance(parsed, dict):
+                    config = parsed
+            except (
+                TypeError,
+                ValueError,
+                json.JSONDecodeError,
+            ):
+                config = {}
+
+        discovery = discovery_rows.get(pack_id)
+
+        discovery_by_source = {
+            item["source_id"]: item
+            for item in discovered_sources.get(
+                pack_id,
+                [],
+            )
+        }
+
+        platform_name = str(
+            agent["platform"] or ""
+        ).strip().lower()
+
+        readiness = evaluate_pack_activation_readiness(
+            manifest,
+            platform_name,
+            discovery_by_source,
+            config,
+            discovery is not None,
+        )
+
+        configuration_schema = (
+            get_pack_configuration_schema(
+                manifest,
+                platform_name,
+            )
+        )
+
+        discovery_status = readiness["status"]
+        can_activate = readiness["can_activate"]
+
+        if not (
+            allowed
+            and globally_enabled
+            and server_compatible
+            and agent_compatible
+            and platform_supported
+        ):
+            discovery_status = "unavailable"
+            can_activate = False
+
+        packs.append(
+            {
+                "id": pack_id,
+                "name": manifest.get(
+                    "name",
+                    pack_id,
+                ),
+                "version": str(
+                    manifest.get(
+                        "version",
+                        "",
+                    )
+                ),
+                "origin": str(
+                    manifest.get(
+                        "origin",
+                        "local",
+                    )
+                ),
+                "category": manifest.get(
+                    "category",
+                    {},
+                ),
+                "globally_enabled": (
+                    globally_enabled
+                ),
+                "allowed": allowed,
+                "server_compatible": (
+                    server_compatible
+                ),
+                "agent_compatible": (
+                    agent_compatible
+                ),
+                "platform_supported": (
+                    platform_supported
+                ),
+                "assigned": (
+                    assignment is not None
+                ),
+                "enabled": bool(
+                    assignment["enabled"]
+                )
+                if assignment is not None
+                else False,
+                "config": config,
+                "configuration_schema": (
+                    configuration_schema
+                ),
+                "discovery_status": discovery_status,
+                "can_activate": can_activate,
+                "activation_reason": readiness["reason"],
+                "discovery_checked_at": (
+                    discovery["checked_at"]
+                    if discovery is not None
+                    else None
+                ),
+                "detected_sources": (
+                    discovered_sources.get(
+                        pack_id,
+                        [],
+                    )
+                ),
+            }
+        )
+
+    packs.sort(
+        key=lambda pack: str(
+            pack["name"]
+        ).lower()
+    )
+
+    return {
+        "agent_id": agent_id,
+        "packs": packs,
+    }
+
+
+@app.put(
+    "/api/v1/agents/{agent_id}/packs/{pack_id}",
+    dependencies=[
+        Depends(require_permission("hosts.manage"))
+    ],
+)
+def update_agent_pack(
+    agent_id: int,
+    pack_id: str,
+    payload: AgentPackAssignmentPayload,
+):
+    with db() as conn:
+        agent = conn.execute(
+            """
+            SELECT *
+            FROM agents
+            WHERE id = ?
+            """,
+            (agent_id,),
+        ).fetchone()
+
+    if agent is None:
+        raise HTTPException(
+            404,
+            "Host não encontrado",
+        )
+
+    pack_dir = None
+    manifest = None
+
+    for candidate in iter_pack_dirs():
+        candidate_manifest = read_pack_manifest(
+            candidate
+        )
+
+        if candidate_manifest is None:
+            continue
+
+        if (
+            str(candidate_manifest.get("id"))
+            == pack_id
+        ):
+            pack_dir = candidate
+            manifest = candidate_manifest
+            break
+
+    if pack_dir is None or manifest is None:
+        raise HTTPException(
+            404,
+            "Pack não encontrado",
+        )
+
+    if payload.enabled:
+        if not is_pack_allowed(manifest):
+            raise HTTPException(
+                409,
+                "Pack blocked by policy",
+            )
+
+        if not is_pack_enabled(pack_id):
+            raise HTTPException(
+                409,
+                "Pack is globally disabled",
+            )
+
+        if not is_pack_server_compatible(
+            manifest
+        ):
+            raise HTTPException(
+                409,
+                "Pack is not compatible with this server",
+            )
+
+        if not is_pack_agent_compatible(
+            manifest,
+            str(
+                agent["agent_version"]
+                or ""
+            ),
+        ):
+            raise HTTPException(
+                409,
+                "Pack is not compatible with this agent",
+            )
+
+        if not is_pack_platform_compatible(
+            manifest,
+            str(
+                agent["platform"]
+                or ""
+            ),
+        ):
+            raise HTTPException(
+                409,
+                "Pack is not compatible with this host platform",
+            )
+
+        platform_name = str(
+            agent["platform"] or ""
+        ).strip().lower()
+
+        with db() as conn:
+            pack_discovery = conn.execute(
+                """
+                SELECT *
+                FROM agent_pack_discovery
+                WHERE agent_id = ?
+                  AND pack_id = ?
+                """,
+                (
+                    agent_id,
+                    pack_id,
+                ),
+            ).fetchone()
+
+            source_rows = conn.execute(
+                """
+                SELECT *
+                FROM agent_pack_source_discovery
+                WHERE agent_id = ?
+                  AND pack_id = ?
+                """,
+                (
+                    agent_id,
+                    pack_id,
+                ),
+            ).fetchall()
+
+        discovery_by_source = {
+            row["source_id"]: row
+            for row in source_rows
+        }
+
+        readiness = evaluate_pack_activation_readiness(
+            manifest,
+            platform_name,
+            discovery_by_source,
+            payload.config,
+            pack_discovery is not None,
+        )
+
+        if not readiness["can_activate"]:
+            reason = readiness["reason"]
+
+            if reason == "discovery_pending":
+                detail = (
+                    "Pack discovery has not completed yet"
+                )
+
+            elif (
+                isinstance(reason, str)
+                and reason.startswith(
+                    "source_requires_configuration:"
+                )
+            ):
+                source_id = reason.split(
+                    ":",
+                    1,
+                )[1]
+
+                detail = (
+                    "Pack source was not detected "
+                    "and requires configuration: "
+                    f"{source_id}"
+                )
+
+            elif (
+                isinstance(reason, str)
+                and reason.startswith(
+                    "source_not_detected:"
+                )
+            ):
+                source_id = reason.split(
+                    ":",
+                    1,
+                )[1]
+
+                detail = (
+                    "Pack source was not detected: "
+                    f"{source_id}"
+                )
+
+            elif reason == "platform_not_supported":
+                detail = (
+                    "Pack is not compatible with "
+                    "this host platform"
+                )
+
+            else:
+                detail = "Pack cannot be activated"
+
+            raise HTTPException(
+                409,
+                detail,
+            )
+
+    try:
+        config_json = json.dumps(
+            payload.config,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            400,
+            f"Invalid pack configuration: {exc}",
+        )
+
+    now = int(time.time())
+
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO agent_pack_assignments
+                (
+                    agent_id,
+                    pack_id,
+                    enabled,
+                    config_json,
+                    created_at,
+                    updated_at
+                )
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(agent_id, pack_id)
+            DO UPDATE SET
+                enabled = excluded.enabled,
+                config_json = excluded.config_json,
+                updated_at = excluded.updated_at
+            """,
+            (
+                agent_id,
+                pack_id,
+                int(payload.enabled),
+                config_json,
+                now,
+                now,
+            ),
+        )
+
+    return {
+        "ok": True,
+        "agent_id": agent_id,
+        "pack_id": pack_id,
+        "enabled": payload.enabled,
+        "config": payload.config,
     }
 
 
@@ -5514,6 +6402,34 @@ def is_pack_agent_compatible(
 
 
 
+
+def is_pack_platform_compatible(
+    manifest: dict,
+    agent_platform: str,
+) -> bool:
+    platforms = manifest.get("platforms")
+
+    if platforms is None:
+        return True
+
+    if not isinstance(platforms, dict):
+        return False
+
+    normalized = str(
+        agent_platform or ""
+    ).strip().lower()
+
+    # Keep compatibility with agents that have not
+    # reported their platform yet.
+    if not normalized:
+        return True
+
+    return normalized in {
+        str(name).strip().lower()
+        for name in platforms
+    }
+
+
 def validate_pack_rule(rule: dict, rule_name: str):
     if not isinstance(rule, dict):
         raise HTTPException(
@@ -5631,6 +6547,301 @@ def validate_pack_rule(rule: dict, rule_name: str):
             )
 
 
+def validate_pack_platforms(platforms: dict):
+    if not isinstance(platforms, dict):
+        raise HTTPException(
+            400,
+            "Pack platforms must be an object",
+        )
+
+    if not platforms:
+        raise HTTPException(
+            400,
+            "Pack platforms cannot be empty",
+        )
+
+    supported_platforms = {
+        "linux",
+        "windows",
+        "freebsd",
+    }
+
+    field_types = {
+        "text",
+        "path",
+        "number",
+        "boolean",
+        "select",
+        "secret",
+    }
+
+    for platform_name, platform in platforms.items():
+        platform_name = str(platform_name).strip().lower()
+
+        if platform_name not in supported_platforms:
+            raise HTTPException(
+                400,
+                f"Unsupported pack platform: {platform_name}",
+            )
+
+        if not isinstance(platform, dict):
+            raise HTTPException(
+                400,
+                f"Platform {platform_name} must be an object",
+            )
+
+        sources = platform.get("sources")
+
+        if not isinstance(sources, list) or not sources:
+            raise HTTPException(
+                400,
+                f"Platform {platform_name} requires sources",
+            )
+
+        source_ids = set()
+
+        for source in sources:
+            if not isinstance(source, dict):
+                raise HTTPException(
+                    400,
+                    f"Platform {platform_name} sources must be objects",
+                )
+
+            source_id = str(
+                source.get("id", "")
+            ).strip()
+
+            if not source_id:
+                raise HTTPException(
+                    400,
+                    f"Platform {platform_name} source requires id",
+                )
+
+            if source_id in source_ids:
+                raise HTTPException(
+                    400,
+                    (
+                        f"Duplicate source id {source_id} "
+                        f"in platform {platform_name}"
+                    ),
+                )
+
+            source_ids.add(source_id)
+
+            family = source.get("family")
+
+            if family is not None:
+                if (
+                    not isinstance(family, str)
+                    or not family.strip()
+                ):
+                    raise HTTPException(
+                        400,
+                        (
+                            f"{platform_name}.{source_id} "
+                            "family must be a non-empty string"
+                        ),
+                    )
+
+            discovery = source.get(
+                "discovery",
+                [],
+            )
+
+            if discovery is not None:
+                if not isinstance(discovery, list):
+                    raise HTTPException(
+                        400,
+                        (
+                            f"{platform_name}.{source_id} "
+                            "discovery must be a list"
+                        ),
+                    )
+
+                for entry in discovery:
+                    if not isinstance(entry, dict):
+                        raise HTTPException(
+                            400,
+                            (
+                                f"{platform_name}.{source_id} "
+                                "discovery entries must be objects"
+                            ),
+                        )
+
+                    discovery_type = str(
+                        entry.get("type", "")
+                    ).strip().lower()
+
+                    if discovery_type not in {
+                        "file",
+                        "journal",
+                    }:
+                        raise HTTPException(
+                            400,
+                            (
+                                f"{platform_name}.{source_id} "
+                                "discovery type must be "
+                                "file or journal"
+                            ),
+                        )
+
+                    if discovery_type == "file":
+                        paths = entry.get("paths")
+
+                        if (
+                            not isinstance(paths, list)
+                            or not paths
+                            or not all(
+                                isinstance(item, str)
+                                and item.strip()
+                                for item in paths
+                            )
+                        ):
+                            raise HTTPException(
+                                400,
+                                (
+                                    f"{platform_name}.{source_id} "
+                                    "file discovery requires paths"
+                                ),
+                            )
+
+                    if discovery_type == "journal":
+                        units = entry.get("units")
+
+                        if (
+                            not isinstance(units, list)
+                            or not units
+                            or not all(
+                                isinstance(item, str)
+                                and item.strip()
+                                for item in units
+                            )
+                        ):
+                            raise HTTPException(
+                                400,
+                                (
+                                    f"{platform_name}.{source_id} "
+                                    "journal discovery requires units"
+                                ),
+                            )
+
+            manual = source.get("manual")
+
+            if manual is None:
+                continue
+
+            if not isinstance(manual, dict):
+                raise HTTPException(
+                    400,
+                    (
+                        f"{platform_name}.{source_id} "
+                        "manual must be an object"
+                    ),
+                )
+
+            fields = manual.get(
+                "fields",
+                [],
+            )
+
+            if not isinstance(fields, list):
+                raise HTTPException(
+                    400,
+                    (
+                        f"{platform_name}.{source_id} "
+                        "manual.fields must be a list"
+                    ),
+                )
+
+            field_ids = set()
+
+            for field in fields:
+                if not isinstance(field, dict):
+                    raise HTTPException(
+                        400,
+                        (
+                            f"{platform_name}.{source_id} "
+                            "manual fields must be objects"
+                        ),
+                    )
+
+                field_id = str(
+                    field.get("id", "")
+                ).strip()
+
+                label = str(
+                    field.get("label", "")
+                ).strip()
+
+                field_type = str(
+                    field.get("type", "")
+                ).strip().lower()
+
+                if not field_id or not label:
+                    raise HTTPException(
+                        400,
+                        (
+                            f"{platform_name}.{source_id} "
+                            "manual field requires id and label"
+                        ),
+                    )
+
+                if field_id in field_ids:
+                    raise HTTPException(
+                        400,
+                        (
+                            f"Duplicate manual field id "
+                            f"{field_id}"
+                        ),
+                    )
+
+                field_ids.add(field_id)
+
+                if field_type not in field_types:
+                    raise HTTPException(
+                        400,
+                        (
+                            f"{platform_name}.{source_id} "
+                            f"invalid field type: {field_type}"
+                        ),
+                    )
+
+                if (
+                    "required" in field
+                    and not isinstance(
+                        field["required"],
+                        bool,
+                    )
+                ):
+                    raise HTTPException(
+                        400,
+                        (
+                            f"{platform_name}.{source_id}."
+                            f"{field_id} required must be boolean"
+                        ),
+                    )
+
+                if field_type == "select":
+                    options = field.get("options")
+
+                    if (
+                        not isinstance(options, list)
+                        or not options
+                        or not all(
+                            isinstance(item, str)
+                            and item.strip()
+                            for item in options
+                        )
+                    ):
+                        raise HTTPException(
+                            400,
+                            (
+                                f"{platform_name}.{source_id}."
+                                f"{field_id} select requires options"
+                            ),
+                        )
+
+
 def validate_pack_manifest(manifest: dict):
     if not isinstance(manifest, dict):
         raise HTTPException(
@@ -5724,26 +6935,42 @@ def validate_pack_manifest(manifest: dict):
         )
 
     sources = manifest.get("sources")
+    platforms = manifest.get("platforms")
 
-    if not isinstance(sources, list):
+    if sources is None and platforms is None:
         raise HTTPException(
             400,
-            "Pack sources must be a list",
+            "Pack requires sources or platforms",
         )
 
-    if not sources:
-        raise HTTPException(
-            400,
-            "Pack sources cannot be empty",
-        )
+    if sources is not None:
+        if not isinstance(sources, list):
+            raise HTTPException(
+                400,
+                "Pack sources must be a list",
+            )
 
-    if not all(
-        isinstance(source, str) and source.strip()
-        for source in sources
-    ):
-        raise HTTPException(
-            400,
-            "Pack sources must contain only non-empty strings",
+        if not sources:
+            raise HTTPException(
+                400,
+                "Pack sources cannot be empty",
+            )
+
+        if not all(
+            isinstance(source, str) and source.strip()
+            for source in sources
+        ):
+            raise HTTPException(
+                400,
+                (
+                    "Pack sources must contain only "
+                    "non-empty strings"
+                ),
+            )
+
+    if platforms is not None:
+        validate_pack_platforms(
+            platforms
         )
 
     compatibility = manifest.get("compatibility")
@@ -5852,6 +7079,12 @@ def validate_pack_directory(pack_dir: Path):
                 rule.get("id", "")
             ).strip()
 
+            if not rule_id.startswith(f"{pack_id}."):
+                raise HTTPException(
+                    400,
+                    f"Rule id must start with {pack_id}.: {rule_id}",
+                )
+
             if rule_id in rule_ids:
                 raise HTTPException(
                     400,
@@ -5948,6 +7181,18 @@ def validate_pack_archive(archive_path: Path):
                     document,
                     name,
                 )
+
+                rule_id = str(
+                    document.get("id", "")
+                ).strip()
+
+                if not rule_id.startswith(
+                    f"{pack_id}."
+                ):
+                    raise HTTPException(
+                        400,
+                        f"Rule id must start with {pack_id}.: {rule_id}",
+                    )
 
         return manifest
 
@@ -6878,6 +8123,30 @@ def delete_pack(pack_id: str):
     with db() as conn:
         conn.execute(
             """
+            DELETE FROM agent_pack_source_discovery
+            WHERE pack_id = ?
+            """,
+            (pack_id,),
+        )
+
+        conn.execute(
+            """
+            DELETE FROM agent_pack_discovery
+            WHERE pack_id = ?
+            """,
+            (pack_id,),
+        )
+
+        conn.execute(
+            """
+            DELETE FROM agent_pack_assignments
+            WHERE pack_id = ?
+            """,
+            (pack_id,),
+        )
+
+        conn.execute(
+            """
             DELETE FROM pack_states
             WHERE pack_id = ?
             """,
@@ -7045,9 +8314,18 @@ def download_pack_engine():
     )
 
 
-@app.get("/api/v1/agent/packs")
-def get_agent_packs(agent=Depends(get_agent)):
+@app.get("/api/v1/agent/pack-catalog")
+def get_agent_pack_catalog(
+    agent=Depends(get_agent),
+):
     packs = []
+
+    agent_platform = str(
+        agent.get("platform") or ""
+    ).strip().lower()
+
+    if not agent_platform:
+        return {"packs": []}
 
     for pack_dir in iter_pack_dirs():
         if not pack_dir.is_dir():
@@ -7059,6 +8337,278 @@ def get_agent_packs(agent=Depends(get_agent)):
         manifest = read_pack_manifest(pack_dir)
 
         if manifest is None:
+            continue
+
+        platforms = manifest.get("platforms")
+
+        if not isinstance(platforms, dict):
+            continue
+
+        if not is_pack_allowed(manifest):
+            continue
+
+        pack_id = str(manifest["id"])
+
+        if not is_pack_enabled(pack_id):
+            continue
+
+        if not is_pack_server_compatible(manifest):
+            continue
+
+        if not is_pack_agent_compatible(
+            manifest,
+            str(agent.get("agent_version") or ""),
+        ):
+            continue
+
+        if not is_pack_platform_compatible(
+            manifest,
+            agent_platform,
+        ):
+            continue
+
+        platform_config = platforms.get(
+            agent_platform
+        )
+
+        if not isinstance(platform_config, dict):
+            continue
+
+        packs.append(
+            {
+                "id": pack_id,
+                "name": manifest.get(
+                    "name",
+                    pack_id,
+                ),
+                "version": str(
+                    manifest.get(
+                        "version",
+                        "",
+                    )
+                ),
+                "platform": agent_platform,
+                "sources": platform_config.get(
+                    "sources",
+                    [],
+                ),
+            }
+        )
+
+    packs.sort(
+        key=lambda pack: str(
+            pack["name"]
+        ).lower()
+    )
+
+    return {"packs": packs}
+
+
+@app.post("/api/v1/agent/pack-discovery")
+def report_agent_pack_discovery(
+    batch: AgentPackDiscoveryBatch,
+    agent=Depends(get_agent),
+):
+    now = int(time.time())
+
+    catalog = get_agent_pack_catalog(
+        agent=agent
+    )
+
+    valid_sources = {
+        str(pack["id"]): {
+            str(source.get("id", "")).strip()
+            for source in pack.get("sources", [])
+            if str(source.get("id", "")).strip()
+        }
+        for pack in catalog["packs"]
+    }
+
+    with db() as conn:
+        for result in batch.packs:
+            pack_id = result.pack_id.strip()
+
+            if pack_id not in valid_sources:
+                raise HTTPException(
+                    400,
+                    (
+                        "Pack is not available for "
+                        f"discovery: {pack_id}"
+                    ),
+                )
+
+            seen_source_ids = set()
+
+            for source in result.sources:
+                source_id = source.source_id.strip()
+
+                if not source_id:
+                    raise HTTPException(
+                        400,
+                        "Discovery source id cannot be empty",
+                    )
+
+                if source_id in seen_source_ids:
+                    raise HTTPException(
+                        400,
+                        (
+                            "Duplicate discovery source: "
+                            f"{pack_id}/{source_id}"
+                        ),
+                    )
+
+                seen_source_ids.add(source_id)
+
+                if source_id not in valid_sources[pack_id]:
+                    raise HTTPException(
+                        400,
+                        (
+                            "Unknown discovery source: "
+                            f"{pack_id}/{source_id}"
+                        ),
+                    )
+
+            conn.execute(
+                """
+                INSERT INTO agent_pack_discovery
+                    (
+                        agent_id,
+                        pack_id,
+                        supported,
+                        detected,
+                        source_id,
+                        source_type,
+                        source_value,
+                        checked_at
+                    )
+                VALUES (?, ?, ?, ?, '', '', '', ?)
+                ON CONFLICT(agent_id, pack_id)
+                DO UPDATE SET
+                    supported = excluded.supported,
+                    detected = excluded.detected,
+                    source_id = '',
+                    source_type = '',
+                    source_value = '',
+                    checked_at = excluded.checked_at
+                """,
+                (
+                    agent["id"],
+                    pack_id,
+                    int(result.supported),
+                    int(result.detected),
+                    now,
+                ),
+            )
+
+            conn.execute(
+                """
+                DELETE FROM agent_pack_source_discovery
+                WHERE agent_id = ?
+                  AND pack_id = ?
+                """,
+                (
+                    agent["id"],
+                    pack_id,
+                ),
+            )
+
+            for source in result.sources:
+                conn.execute(
+                    """
+                    INSERT INTO agent_pack_source_discovery
+                        (
+                            agent_id,
+                            pack_id,
+                            source_id,
+                            detected,
+                            source_type,
+                            source_value,
+                            checked_at
+                        )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        agent["id"],
+                        pack_id,
+                        source.source_id.strip(),
+                        int(source.detected),
+                        source.source_type.strip(),
+                        source.source_value.strip(),
+                        now,
+                    ),
+                )
+
+    return {
+        "received": len(batch.packs),
+    }
+
+
+@app.get("/api/v1/agent/packs")
+def get_agent_packs(agent=Depends(get_agent)):
+    packs = []
+
+    with db() as conn:
+        assignment_rows = conn.execute(
+            """
+            SELECT *
+            FROM agent_pack_assignments
+            WHERE agent_id = ?
+              AND enabled = 1
+            """,
+            (agent["id"],),
+        ).fetchall()
+
+        assignments = {
+            row["pack_id"]: row
+            for row in assignment_rows
+        }
+
+        pack_discovery_rows = {
+            row["pack_id"]: row
+            for row in conn.execute(
+                """
+                SELECT *
+                FROM agent_pack_discovery
+                WHERE agent_id = ?
+                """,
+                (agent["id"],),
+            ).fetchall()
+        }
+
+        source_discovery_rows = conn.execute(
+            """
+            SELECT *
+            FROM agent_pack_source_discovery
+            WHERE agent_id = ?
+            """,
+            (agent["id"],),
+        ).fetchall()
+
+    discovery_by_pack = {}
+
+    for row in source_discovery_rows:
+        discovery_by_pack.setdefault(
+            row["pack_id"],
+            {},
+        )[row["source_id"]] = row
+
+    for pack_dir in iter_pack_dirs():
+        if not pack_dir.is_dir():
+            continue
+
+        if pack_dir.is_symlink():
+            continue
+
+        manifest = read_pack_manifest(pack_dir)
+
+        if manifest is None:
+            continue
+
+        pack_id = str(manifest["id"])
+
+        assignment = assignments.get(pack_id)
+
+        if assignment is None:
             continue
 
         if not is_pack_allowed(manifest):
@@ -7076,7 +8626,48 @@ def get_agent_packs(agent=Depends(get_agent)):
         ):
             continue
 
-        pack_id = manifest["id"]
+        if not is_pack_platform_compatible(
+            manifest,
+            str(agent.get("platform") or ""),
+        ):
+            continue
+
+        try:
+            config = json.loads(
+                assignment["config_json"]
+                or "{}"
+            )
+
+            if not isinstance(config, dict):
+                config = {}
+
+        except (
+            TypeError,
+            ValueError,
+            json.JSONDecodeError,
+        ):
+            config = {}
+
+        pack_discovery = pack_discovery_rows.get(
+            pack_id
+        )
+
+        readiness = evaluate_pack_activation_readiness(
+            manifest,
+            str(
+                agent.get("platform") or ""
+            ).strip().lower(),
+            discovery_by_pack.get(
+                pack_id,
+                {},
+            ),
+            config,
+            pack_discovery is not None,
+        )
+
+        if not readiness["can_activate"]:
+            continue
+
         version = manifest["version"]
 
         files = {}
