@@ -10,6 +10,7 @@ services:
       - "${FERPEK_PORT:-8000}:8000"
     environment:
       - DB_PATH=/data/ferpek.db
+      - PACK_REGISTRY_URL=${PACK_REGISTRY_URL:-https://raw.githubusercontent.com/ferpekdev/ferpek-lens-packs/main/index.json}
     volumes:
       - server_data:/data
     healthcheck:

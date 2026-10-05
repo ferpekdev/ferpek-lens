@@ -1,5 +1,8 @@
 import os
 import json
+import urllib.error
+import urllib.parse
+import urllib.request
 """
 FERPEK Server
 
@@ -53,6 +56,11 @@ SECRET_KEY_PATH = Path(
 BUILTIN_PACKS_PATH = Path("/app/packs")
 INSTALLED_PACKS_PATH = Path("/data/packs")
 PACK_ENGINE_PATH = Path("/app/ferpek_lens/pack_engine.py")
+
+PACK_REGISTRY_URL = os.environ.get(
+    "PACK_REGISTRY_URL",
+    "https://raw.githubusercontent.com/ferpekdev/ferpek-lens-packs/main/index.json",
+)
 
 EVENT_RETENTION_DAYS = 14
 RESOLVED_FINDING_RETENTION_DAYS = 90
@@ -7681,58 +7689,17 @@ def validate_pack_changes(
     }
 
 
-@app.post("/api/v1/packs/install", dependencies=[Depends(require_permission("packs.manage"))])
-async def install_pack(file: UploadFile = File(...)):
-    # Future permission:
-    # packs.install
-
-    filename = file.filename or ""
-
-    if not filename.lower().endswith(".pack"):
-        raise HTTPException(
-            400,
-            "Uploaded file must use the .pack extension",
-        )
-
-    INSTALLED_PACKS_PATH.mkdir(
-        parents=True,
-        exist_ok=True,
-    )
-
-    max_archive_size = 10 * 1024 * 1024
+def install_pack_archive(
+    archive_path: Path,
+    allow_official: bool = False,
+):
     max_uncompressed_size = 25 * 1024 * 1024
     max_files = 250
 
-    archive_path = None
     staging_dir = None
     backup_dir = None
 
     try:
-        with tempfile.NamedTemporaryFile(
-            prefix=".upload-",
-            suffix=".pack",
-            dir=INSTALLED_PACKS_PATH,
-            delete=False,
-        ) as temporary:
-            archive_path = Path(temporary.name)
-            total = 0
-
-            while True:
-                chunk = await file.read(1024 * 1024)
-
-                if not chunk:
-                    break
-
-                total += len(chunk)
-
-                if total > max_archive_size:
-                    raise HTTPException(
-                        413,
-                        "Pack archive exceeds the 10 MB limit",
-                    )
-
-                temporary.write(chunk)
-
         manifest = validate_pack_archive(
             archive_path
         )
@@ -7744,7 +7711,7 @@ async def install_pack(file: UploadFile = File(...)):
             manifest.get("origin", "local")
         ).strip().lower()
 
-        if origin == "official":
+        if origin == "official" and not allow_official:
             raise HTTPException(
                 400,
                 (
@@ -7865,7 +7832,7 @@ async def install_pack(file: UploadFile = File(...)):
                 raise HTTPException(
                     409,
                     (
-                        f"Pack downgrade is not allowed: "
+                        "Pack downgrade is not allowed: "
                         f"{current_version} -> {version}"
                     ),
                 )
@@ -7921,16 +7888,6 @@ async def install_pack(file: UploadFile = File(...)):
         }
 
     finally:
-        await file.close()
-
-        if (
-            archive_path is not None
-            and archive_path.exists()
-        ):
-            archive_path.unlink(
-                missing_ok=True
-            )
-
         if (
             staging_dir is not None
             and staging_dir.exists()
@@ -7947,6 +7904,70 @@ async def install_pack(file: UploadFile = File(...)):
             shutil.rmtree(
                 backup_dir,
                 ignore_errors=True,
+            )
+
+
+@app.post("/api/v1/packs/install", dependencies=[Depends(require_permission("packs.manage"))])
+async def install_pack(file: UploadFile = File(...)):
+    # Future permission:
+    # packs.install
+
+    filename = file.filename or ""
+
+    if not filename.lower().endswith(".pack"):
+        raise HTTPException(
+            400,
+            "Uploaded file must use the .pack extension",
+        )
+
+    INSTALLED_PACKS_PATH.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    max_archive_size = 10 * 1024 * 1024
+    archive_path = None
+
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix=".upload-",
+            suffix=".pack",
+            dir=INSTALLED_PACKS_PATH,
+            delete=False,
+        ) as temporary:
+            archive_path = Path(temporary.name)
+            total = 0
+
+            while True:
+                chunk = await file.read(1024 * 1024)
+
+                if not chunk:
+                    break
+
+                total += len(chunk)
+
+                if total > max_archive_size:
+                    raise HTTPException(
+                        413,
+                        "Pack archive exceeds the 10 MB limit",
+                    )
+
+                temporary.write(chunk)
+
+        return install_pack_archive(
+            archive_path,
+            allow_official=False,
+        )
+
+    finally:
+        await file.close()
+
+        if (
+            archive_path is not None
+            and archive_path.exists()
+        ):
+            archive_path.unlink(
+                missing_ok=True
             )
 
 
@@ -8176,6 +8197,522 @@ def delete_pack(pack_id: str):
         "ok": True,
         "id": pack_id,
         "deleted": True,
+    }
+
+
+def fetch_pack_registry():
+    max_registry_size = 2 * 1024 * 1024
+
+    request = urllib.request.Request(
+        PACK_REGISTRY_URL,
+        headers={
+            "User-Agent": f"FERPEK-Lens/{SERVER_VERSION}",
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=10,
+        ) as response:
+            content = response.read(
+                max_registry_size + 1
+            )
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(
+            502,
+            f"Pack registry returned HTTP {exc.code}",
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(
+            502,
+            f"Pack registry unavailable: {exc.reason}",
+        ) from exc
+
+    if len(content) > max_registry_size:
+        raise HTTPException(
+            502,
+            "Pack registry response exceeds size limit",
+        )
+
+    try:
+        registry = json.loads(
+            content.decode("utf-8")
+        )
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(
+            502,
+            "Pack registry returned invalid JSON",
+        ) from exc
+
+    if not isinstance(registry, dict):
+        raise HTTPException(
+            502,
+            "Invalid pack registry",
+        )
+
+    if registry.get("schema_version") != 1:
+        raise HTTPException(
+            502,
+            "Unsupported pack registry schema",
+        )
+
+    packs = registry.get("packs")
+
+    if not isinstance(packs, list):
+        raise HTTPException(
+            502,
+            "Invalid pack registry pack list",
+        )
+
+    return registry
+
+
+def download_registry_pack(entry: dict) -> Path:
+    pack_id = str(
+        entry.get("id", "")
+    ).strip()
+
+    version = str(
+        entry.get("version", "")
+    ).strip()
+
+    download = str(
+        entry.get("download", "")
+    ).strip()
+
+    expected_sha256 = str(
+        entry.get("sha256", "")
+    ).strip().lower()
+
+    expected_size = entry.get("size")
+
+    origin = str(
+        entry.get("origin", "")
+    ).strip().lower()
+
+    if not pack_id or not version:
+        raise HTTPException(
+            502,
+            "Registry pack is missing id or version",
+        )
+
+    if origin != "official":
+        raise HTTPException(
+            502,
+            "Registry pack is not marked official",
+        )
+
+    if not download:
+        raise HTTPException(
+            502,
+            "Registry pack is missing download path",
+        )
+
+    if (
+        len(expected_sha256) != 64
+        or any(
+            char not in "0123456789abcdef"
+            for char in expected_sha256
+        )
+    ):
+        raise HTTPException(
+            502,
+            "Registry pack has invalid SHA-256",
+        )
+
+    if (
+        not isinstance(expected_size, int)
+        or expected_size <= 0
+        or expected_size > 10 * 1024 * 1024
+    ):
+        raise HTTPException(
+            502,
+            "Registry pack has invalid size",
+        )
+
+    download_url = urllib.parse.urljoin(
+        PACK_REGISTRY_URL,
+        download,
+    )
+
+    parsed_registry = urllib.parse.urlparse(
+        PACK_REGISTRY_URL
+    )
+    parsed_download = urllib.parse.urlparse(
+        download_url
+    )
+
+    if parsed_download.scheme not in {"http", "https"}:
+        raise HTTPException(
+            502,
+            "Registry pack download URL is invalid",
+        )
+
+    if (
+        parsed_registry.scheme == "https"
+        and parsed_download.scheme != "https"
+    ):
+        raise HTTPException(
+            502,
+            "Registry pack download cannot downgrade HTTPS",
+        )
+
+    if (
+        parsed_download.scheme != parsed_registry.scheme
+        or parsed_download.netloc != parsed_registry.netloc
+    ):
+        raise HTTPException(
+            502,
+            "Registry pack download must use the registry origin",
+        )
+
+    request = urllib.request.Request(
+        download_url,
+        headers={
+            "User-Agent": f"FERPEK-Lens/{SERVER_VERSION}",
+            "Accept": "application/octet-stream",
+        },
+    )
+
+    INSTALLED_PACKS_PATH.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    temporary_path = None
+
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=20,
+        ) as response:
+            with tempfile.NamedTemporaryFile(
+                prefix=".registry-",
+                suffix=".pack",
+                dir=INSTALLED_PACKS_PATH,
+                delete=False,
+            ) as temporary:
+                temporary_path = Path(
+                    temporary.name
+                )
+
+                digest = hashlib.sha256()
+                total = 0
+
+                while True:
+                    chunk = response.read(
+                        1024 * 1024
+                    )
+
+                    if not chunk:
+                        break
+
+                    total += len(chunk)
+
+                    if total > 10 * 1024 * 1024:
+                        raise HTTPException(
+                            413,
+                            "Registry pack exceeds 10 MB limit",
+                        )
+
+                    digest.update(chunk)
+                    temporary.write(chunk)
+
+        if total != expected_size:
+            raise HTTPException(
+                502,
+                "Registry pack size does not match catalog",
+            )
+
+        actual_sha256 = digest.hexdigest()
+
+        if actual_sha256 != expected_sha256:
+            raise HTTPException(
+                502,
+                "Registry pack SHA-256 does not match catalog",
+            )
+
+        manifest = validate_pack_archive(
+            temporary_path
+        )
+
+        if str(manifest["id"]).strip() != pack_id:
+            raise HTTPException(
+                502,
+                "Registry pack id does not match catalog",
+            )
+
+        if str(manifest["version"]).strip() != version:
+            raise HTTPException(
+                502,
+                "Registry pack version does not match catalog",
+            )
+
+        if str(
+            manifest.get("origin", "")
+        ).strip().lower() != "official":
+            raise HTTPException(
+                502,
+                "Registry pack manifest is not official",
+            )
+
+        return temporary_path
+
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(
+            502,
+            f"Pack download returned HTTP {exc.code}",
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(
+            502,
+            f"Pack download failed: {exc.reason}",
+        ) from exc
+    except Exception:
+        if (
+            temporary_path is not None
+            and temporary_path.exists()
+        ):
+            temporary_path.unlink(
+                missing_ok=True
+            )
+        raise
+
+
+def get_registry_pack_status(entry: dict):
+    pack_id = str(
+        entry.get("id", "")
+    ).strip()
+
+    version = str(
+        entry.get("version", "")
+    ).strip()
+
+    if not pack_id or not version:
+        return "invalid", None
+
+    compatibility = entry.get(
+        "compatibility",
+        {},
+    )
+
+    if not isinstance(compatibility, dict):
+        compatibility = {}
+
+    server_spec = str(
+        compatibility.get("server", "")
+    ).strip()
+
+    if server_spec:
+        try:
+            if Version(SERVER_VERSION) not in SpecifierSet(
+                server_spec
+            ):
+                return "incompatible", None
+        except Exception:
+            return "invalid", None
+
+    local_manifest = None
+
+    for base_path in (
+        INSTALLED_PACKS_PATH,
+        BUILTIN_PACKS_PATH,
+    ):
+        candidate = base_path / pack_id
+
+        if not candidate.is_dir():
+            continue
+
+        if candidate.is_symlink():
+            continue
+
+        manifest = read_pack_manifest(
+            candidate
+        )
+
+        if manifest is None:
+            continue
+
+        if str(
+            manifest.get("id", "")
+        ).strip() != pack_id:
+            continue
+
+        local_manifest = manifest
+        break
+
+    if local_manifest is None:
+        return "available", None
+
+    local_version = str(
+        local_manifest.get(
+            "version",
+            "",
+        )
+    ).strip()
+
+    try:
+        registry_version = Version(version)
+        installed_version = Version(
+            local_version
+        )
+    except InvalidVersion:
+        return "invalid", local_version
+
+    if registry_version > installed_version:
+        return "update_available", local_version
+
+    if registry_version < installed_version:
+        return "local_newer", local_version
+
+    return "installed", local_version
+
+
+@app.post(
+    "/api/v1/packs/registry/{pack_id}/install",
+    dependencies=[
+        Depends(
+            require_permission("packs.manage")
+        )
+    ],
+)
+def install_registry_pack(pack_id: str):
+    pack_id = str(pack_id).strip()
+
+    if not pack_id:
+        raise HTTPException(
+            400,
+            "Pack id is required",
+        )
+
+    if not all(
+        char.isalnum() or char in {"-", "_"}
+        for char in pack_id
+    ):
+        raise HTTPException(
+            400,
+            "Invalid pack id",
+        )
+
+    registry = fetch_pack_registry()
+
+    entry = next(
+        (
+            item
+            for item in registry["packs"]
+            if (
+                isinstance(item, dict)
+                and str(item.get("id", "")).strip()
+                == pack_id
+            )
+        ),
+        None,
+    )
+
+    if entry is None:
+        raise HTTPException(
+            404,
+            "Pack not found in official registry",
+        )
+
+    status, installed_version = (
+        get_registry_pack_status(entry)
+    )
+
+    if status == "invalid":
+        raise HTTPException(
+            502,
+            "Registry pack metadata is invalid",
+        )
+
+    if status == "incompatible":
+        raise HTTPException(
+            409,
+            "Pack is not compatible with this server",
+        )
+
+    if status == "installed":
+        raise HTTPException(
+            409,
+            (
+                f"Pack {pack_id} version "
+                f"{entry['version']} is already installed"
+            ),
+        )
+
+    if status == "local_newer":
+        raise HTTPException(
+            409,
+            (
+                f"Installed pack version "
+                f"{installed_version} is newer than "
+                f"registry version {entry['version']}"
+            ),
+        )
+
+    archive_path = None
+
+    try:
+        archive_path = download_registry_pack(
+            entry
+        )
+
+        return install_pack_archive(
+            archive_path,
+            allow_official=True,
+        )
+    finally:
+        if (
+            archive_path is not None
+            and archive_path.exists()
+        ):
+            archive_path.unlink(
+                missing_ok=True
+            )
+
+
+@app.get(
+    "/api/v1/packs/registry",
+    dependencies=[
+        Depends(
+            require_permission("packs.view")
+        )
+    ],
+)
+def list_registry_packs():
+    registry = fetch_pack_registry()
+    packs = []
+
+    for entry in registry["packs"]:
+        if not isinstance(entry, dict):
+            continue
+
+        status, installed_version = (
+            get_registry_pack_status(entry)
+        )
+
+        pack = dict(entry)
+        pack["status"] = status
+        pack["installed_version"] = (
+            installed_version
+        )
+
+        packs.append(pack)
+
+    packs.sort(
+        key=lambda pack: str(
+            pack.get("name", pack.get("id", ""))
+        ).lower()
+    )
+
+    return {
+        "schema_version": registry[
+            "schema_version"
+        ],
+        "registry_url": PACK_REGISTRY_URL,
+        "packs": packs,
     }
 
 

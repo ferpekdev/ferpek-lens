@@ -352,6 +352,31 @@ type ApiAgent = {
   warning_count: number
 }
 
+type RegistryPack = {
+  id: string
+  name: string
+  version: string
+  description: string
+  origin: string
+  category: {
+    id: string
+    label: string
+  }
+  compatibility: Record<string, string>
+  platforms: string[]
+  download: string
+  sha256: string
+  size: number
+  status:
+    | "available"
+    | "installed"
+    | "update_available"
+    | "local_newer"
+    | "incompatible"
+    | "invalid"
+  installed_version: string | null
+}
+
 type ApiPack = {
   id: string
   name: string
@@ -5238,7 +5263,15 @@ function Packs({
   currentUser: CurrentUser
 }) {
   const [packs, setPacks] = useState<ApiPack[]>([])
+  const [registryPacks, setRegistryPacks] =
+    useState<RegistryPack[]>([])
   const [loading, setLoading] = useState(true)
+  const [registryLoading, setRegistryLoading] =
+    useState(true)
+  const [registryError, setRegistryError] =
+    useState("")
+  const [registryInstalling, setRegistryInstalling] =
+    useState<string | null>(null)
   const [packSearch, setPackSearch] = useState("")
   const [packView, setPackView] =
     useState<'installed' | 'disabled' | 'available' | 'updates'>(
@@ -5299,7 +5332,41 @@ function Packs({
       }
     }
 
+    async function loadRegistryPacks() {
+      try {
+        const response = await fetch(
+          "/api/v1/packs/registry",
+        )
+
+        if (!response.ok) {
+          throw new Error(
+            `HTTP ${response.status}`,
+          )
+        }
+
+        const data = await response.json()
+
+        setRegistryPacks(
+          Array.isArray(data?.packs)
+            ? data.packs
+            : [],
+        )
+        setRegistryError("")
+      } catch (error) {
+        console.error(
+          "Could not load pack registry:",
+          error,
+        )
+        setRegistryError(
+          "Could not load the official pack registry.",
+        )
+      } finally {
+        setRegistryLoading(false)
+      }
+    }
+
     void loadPacks()
+    void loadRegistryPacks()
   }, [])
 
   async function setPackEnabled(
@@ -5361,6 +5428,92 @@ function Packs({
       )
     } finally {
       setPackStateChanging(null)
+    }
+  }
+
+
+  async function installRegistryPack(
+    pack: RegistryPack,
+  ) {
+    if (
+      !hasPermission(currentUser, 'packs.manage') ||
+      registryInstalling
+    ) {
+      return
+    }
+
+    setRegistryInstalling(pack.id)
+    setPackInstallError("")
+
+    try {
+      const response = await fetch(
+        `/api/v1/packs/registry/${encodeURIComponent(pack.id)}/install`,
+        {
+          method: "POST",
+        },
+      )
+
+      const contentType =
+        response.headers.get("content-type") || ""
+
+      const data = contentType.includes(
+        "application/json",
+      )
+        ? await response.json()
+        : null
+
+      if (!response.ok) {
+        throw new Error(
+          data?.detail ||
+            `Could not install pack (HTTP ${response.status}).`,
+        )
+      }
+
+      const [packsResponse, registryResponse] =
+        await Promise.all([
+          fetch("/api/v1/packs"),
+          fetch("/api/v1/packs/registry"),
+        ])
+
+      if (!packsResponse.ok) {
+        throw new Error(
+          "Pack installed, but the local pack list could not be refreshed.",
+        )
+      }
+
+      const packsData = await packsResponse.json()
+
+      setPacks(
+        Array.isArray(packsData?.packs)
+          ? packsData.packs
+          : [],
+      )
+
+      if (registryResponse.ok) {
+        const registryData =
+          await registryResponse.json()
+
+        setRegistryPacks(
+          Array.isArray(registryData?.packs)
+            ? registryData.packs
+            : [],
+        )
+      }
+
+      showToast(
+        data?.action === "updated"
+          ? `${pack.name} updated successfully.`
+          : `${pack.name} installed successfully.`,
+        'success',
+      )
+    } catch (error) {
+      setPackInstallError(
+        error instanceof Error
+          ? error.message
+          : "Could not install pack.",
+      )
+    } finally {
+      setRegistryInstalling(null)
     }
   }
 
@@ -5847,6 +6000,14 @@ function Packs({
     (pack) => pack.installed && !pack.enabled,
   )
 
+  const availableRegistryPacks = registryPacks.filter(
+    (pack) => pack.status === "available",
+  )
+
+  const updateRegistryPacks = registryPacks.filter(
+    (pack) => pack.status === "update_available",
+  )
+
   const filteredPacks = packs.filter((pack) => {
     if (
       packView === 'installed' &&
@@ -5881,6 +6042,31 @@ function Packs({
       pack.category?.id,
       pack.category?.label,
       pack.overridden ? "local override" : "",
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase()
+
+    return searchable.includes(normalizedPackSearch)
+  })
+
+  const filteredRegistryPacks = (
+    packView === "updates"
+      ? updateRegistryPacks
+      : availableRegistryPacks
+  ).filter((pack) => {
+    if (!normalizedPackSearch) {
+      return true
+    }
+
+    const searchable = [
+      pack.id,
+      pack.name,
+      pack.description,
+      pack.origin,
+      pack.category?.id,
+      pack.category?.label,
+      ...(pack.platforms || []),
     ]
       .filter(Boolean)
       .join(" ")
@@ -5966,26 +6152,38 @@ function Packs({
 
         <button
           type="button"
-          className="filter-button"
-          disabled
-          title="Pack catalog support is not implemented yet."
+          className={`filter-button ${
+            packView === 'available'
+              ? 'selected'
+              : ''
+          }`}
+          onClick={() => setPackView('available')}
         >
           Available
+          <span className="host-pack-filter-count">
+            {availableRegistryPacks.length}
+          </span>
         </button>
 
         <button
           type="button"
-          className="filter-button"
-          disabled
-          title="Pack update discovery is not implemented yet."
+          className={`filter-button ${
+            packView === 'updates'
+              ? 'selected'
+              : ''
+          }`}
+          onClick={() => setPackView('updates')}
         >
           Updates
+          <span className="host-pack-filter-count">
+            {updateRegistryPacks.length}
+          </span>
         </button>
 
         <input
           className="pack-search-input"
           type="search"
-          placeholder="Search installed packs..."
+          placeholder="Search packs..."
           value={packSearch}
           onChange={(event) =>
             setPackSearch(event.target.value)
@@ -6002,8 +6200,107 @@ function Packs({
         </div>
       )}
 
+      {registryError && (
+        <div className="pack-page-error">
+          {registryError}
+        </div>
+      )}
+
       <div className="packs-page">
-        {loading ? (
+        {packView === 'available' ||
+        packView === 'updates' ? (
+          registryLoading ? (
+            <div className="empty-state">
+              Loading pack registry...
+            </div>
+          ) : filteredRegistryPacks.length === 0 ? (
+            <div className="empty-state">
+              {packView === 'updates'
+                ? 'No pack updates are available.'
+                : 'No additional packs are available.'}
+            </div>
+          ) : (
+            <div className="packs-list">
+              {filteredRegistryPacks.map((pack) => (
+                <div
+                  className="pack-row"
+                  key={pack.id}
+                >
+                  <div className="pack-main">
+                    <div className="pack-title-row">
+                      <strong>{pack.name}</strong>
+
+                      <span className="pack-version">
+                        v{pack.version}
+                      </span>
+
+                      <span className="pack-status-text enabled">
+                        {packView === 'updates'
+                          ? 'Update available'
+                          : 'Available'}
+                      </span>
+                    </div>
+
+                    <p>{pack.description}</p>
+
+                    <div className="pack-meta">
+                      <span>{pack.category.label}</span>
+                      <span>·</span>
+                      <span>
+                        {pack.origin === "official"
+                          ? "Official"
+                          : pack.origin}
+                      </span>
+
+                      {pack.platforms.length > 0 && (
+                        <>
+                          <span>·</span>
+                          <span>
+                            {pack.platforms.join(", ")}
+                          </span>
+                        </>
+                      )}
+
+                      {pack.status === "update_available" &&
+                        pack.installed_version && (
+                        <>
+                          <span>·</span>
+                          <span>
+                            Installed v{pack.installed_version}
+                          </span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="pack-row-actions">
+                    {hasPermission(
+                      currentUser,
+                      'packs.manage',
+                    ) && (
+                      <button
+                        className="primary-button action-button"
+                        type="button"
+                        disabled={registryInstalling === pack.id}
+                        onClick={() =>
+                          void installRegistryPack(pack)
+                        }
+                      >
+                        {registryInstalling === pack.id
+                          ? packView === 'updates'
+                            ? 'Updating...'
+                            : 'Installing...'
+                          : packView === 'updates'
+                            ? 'Update'
+                            : 'Install'}
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )
+        ) : loading ? (
           <div className="empty-state">
             Loading packs...
           </div>
