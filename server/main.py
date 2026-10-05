@@ -889,6 +889,20 @@ def cleanup_retention():
             (relevant_cutoff,),
         ).rowcount
 
+        conn.execute(
+            """
+            DELETE FROM finding_detections
+            WHERE finding_id IN (
+                SELECT id
+                FROM findings
+                WHERE status = 'resolved'
+                  AND resolved_at IS NOT NULL
+                  AND resolved_at < ?
+            )
+            """,
+            (finding_cutoff,),
+        )
+
         findings_deleted = conn.execute(
             """
             DELETE FROM findings
@@ -6212,6 +6226,11 @@ def delete_agent(agent_id: int):
 
         conn.execute(
             "DELETE FROM relevant_events WHERE agent_id = ?",
+            (agent_id,),
+        )
+
+        conn.execute(
+            "DELETE FROM finding_detections WHERE agent_id = ?",
             (agent_id,),
         )
 
