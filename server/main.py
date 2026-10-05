@@ -8731,6 +8731,170 @@ def get_agent_packs(agent=Depends(get_agent)):
 
             files[relative_path] = content
 
+        runtime_sources = []
+
+        platform_name = str(
+            agent.get("platform") or ""
+        ).strip().lower()
+
+        platforms = manifest.get(
+            "platforms",
+            {},
+        )
+
+        platform_config = (
+            platforms.get(platform_name, {})
+            if isinstance(platforms, dict)
+            else {}
+        )
+
+        declarative_sources = (
+            platform_config.get("sources", [])
+            if isinstance(platform_config, dict)
+            else []
+        )
+
+        for source in declarative_sources:
+            if not isinstance(source, dict):
+                continue
+
+            source_id = str(
+                source.get("id", "")
+            ).strip()
+
+            if not source_id:
+                continue
+
+            source_name = str(
+                source.get("name")
+                or source_id
+            )
+
+            discovery_row = (
+                discovery_by_pack
+                .get(pack_id, {})
+                .get(source_id)
+            )
+
+            runtime_source = None
+
+            if (
+                discovery_row is not None
+                and bool(discovery_row["detected"])
+            ):
+                source_type = str(
+                    discovery_row["source_type"]
+                    or ""
+                ).strip()
+
+                source_value = str(
+                    discovery_row["source_value"]
+                    or ""
+                ).strip()
+
+                if source_type == "journal":
+                    runtime_source = {
+                        "source_key": source_id,
+                        "name": source_name,
+                        "source_type": "journal",
+                        "path": None,
+                        "unit": source_value,
+                        "enabled": True,
+                        "send_events": True,
+                        "discovered": True,
+                    }
+
+                elif source_type == "file":
+                    runtime_source = {
+                        "source_key": source_id,
+                        "name": source_name,
+                        "source_type": "file",
+                        "path": source_value,
+                        "unit": None,
+                        "enabled": True,
+                        "send_events": True,
+                        "discovered": True,
+                    }
+
+            elif is_pack_source_manual_config_valid(
+                source,
+                config,
+            ):
+                config_sources = config.get(
+                    "sources",
+                    {},
+                )
+
+                source_config = (
+                    config_sources.get(
+                        source_id,
+                        {},
+                    )
+                    if isinstance(
+                        config_sources,
+                        dict,
+                    )
+                    else {}
+                )
+
+                manual = source.get(
+                    "manual",
+                    {},
+                )
+
+                fields = (
+                    manual.get("fields", [])
+                    if isinstance(manual, dict)
+                    else []
+                )
+
+                for field in fields:
+                    if not isinstance(field, dict):
+                        continue
+
+                    if (
+                        str(
+                            field.get(
+                                "type",
+                                "",
+                            )
+                        ).strip().lower()
+                        != "path"
+                    ):
+                        continue
+
+                    field_id = str(
+                        field.get("id", "")
+                    ).strip()
+
+                    value = str(
+                        source_config.get(
+                            field_id,
+                            "",
+                        )
+                    ).strip()
+
+                    if not value:
+                        continue
+
+                    runtime_source = {
+                        "source_key": source_id,
+                        "name": source_name,
+                        "source_type": "file",
+                        "path": value,
+                        "unit": None,
+                        "enabled": True,
+                        "send_events": True,
+                        "discovered": False,
+                    }
+
+                    break
+
+            if runtime_source is not None:
+                runtime_sources.append(
+                    runtime_source
+                )
+
         packs.append(
             {
                 "id": pack_id,
@@ -8740,6 +8904,7 @@ def get_agent_packs(agent=Depends(get_agent)):
                 ),
                 "version": str(version),
                 "files": files,
+                "runtime_sources": runtime_sources,
             }
         )
 

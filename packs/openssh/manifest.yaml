@@ -1,6 +1,6 @@
 id: openssh
 name: OpenSSH
-version: 0.2.0
+version: 0.2.1
 author: FERPEK
 description: Detection and interpretation of OpenSSH authentication events.
 
@@ -16,6 +16,7 @@ platforms:
   linux:
     sources:
       - id: authentication
+        family: authentication
         discovery:
           - type: journal
             units:

@@ -806,6 +806,54 @@ def spool_counts():
 
 
 DYNAMIC_SOURCE_FAMILIES = {}
+DYNAMIC_JOURNAL_SOURCES = {}
+
+
+def refresh_dynamic_journal_sources(
+    runtime_sources,
+):
+    global DYNAMIC_JOURNAL_SOURCES
+
+    mappings = {}
+
+    for source in runtime_sources:
+        if not isinstance(source, dict):
+            continue
+
+        if (
+            source.get("source_type")
+            != "journal"
+        ):
+            continue
+
+        source_key = str(
+            source.get("source_key", "")
+        ).strip()
+
+        unit = str(
+            source.get("unit", "")
+        ).strip().lower()
+
+        if source_key and unit:
+            mappings[unit] = source_key
+
+    DYNAMIC_JOURNAL_SOURCES = mappings
+
+    return mappings
+
+
+def pack_runtime_sources_by_key(
+    runtime_sources,
+):
+    return {
+        source["source_key"]: source
+        for source in runtime_sources
+        if (
+            isinstance(source, dict)
+            and source.get("source_key")
+            and source.get("enabled", True)
+        )
+    }
 
 
 SOURCE_FAMILIES = {
@@ -1222,6 +1270,7 @@ def sync_packs(agent_key):
 
     received_ids = set()
     changed = False
+    runtime_sources = []
 
     for pack in packs:
         pack_id = pack.get("id")
@@ -1238,6 +1287,21 @@ def sync_packs(agent_key):
 
         if not pack_id:
             continue
+
+        pack_runtime_sources = pack.get(
+            "runtime_sources",
+            [],
+        )
+
+        if isinstance(
+            pack_runtime_sources,
+            list,
+        ):
+            runtime_sources.extend(
+                source
+                for source in pack_runtime_sources
+                if isinstance(source, dict)
+            )
 
         received_ids.add(pack_id)
 
@@ -1341,7 +1405,11 @@ def sync_packs(agent_key):
                 f"{local_pack.name}"
             )
 
-    return len(received_ids), changed
+    return (
+        len(received_ids),
+        changed,
+        runtime_sources,
+    )
 
 
 def get_os_info():
@@ -1680,6 +1748,13 @@ def classify_journal_event(entry):
     )
 
     message_lower = message.lower()
+
+    dynamic_source = (
+        DYNAMIC_JOURNAL_SOURCES.get(unit)
+    )
+
+    if dynamic_source:
+        return dynamic_source
 
     auth_programs = {
         "sshd",
@@ -2421,13 +2496,34 @@ def main():
     )
 
     try:
-        pack_count, _ = sync_packs(
+        (
+            pack_count,
+            _,
+            pack_runtime_sources,
+        ) = sync_packs(
             agent_key
+        )
+
+        enabled_sources.update(
+            pack_runtime_sources_by_key(
+                pack_runtime_sources
+            )
+        )
+
+        journal_mappings = (
+            refresh_dynamic_journal_sources(
+                pack_runtime_sources
+            )
         )
 
         log(
             f"FERPEK Lens synchronized "
             f"{pack_count} pack(s)"
+        )
+
+        log(
+            f"Loaded {len(journal_mappings)} "
+            f"pack journal source mapping(s)"
         )
 
         families = refresh_pack_source_families()
@@ -2511,6 +2607,33 @@ def main():
                         enabled_sources_from_config(config)
                     )
 
+                    try:
+                        discover_pack_catalog(
+                            agent_key
+                        )
+                    except Exception as exc:
+                        log(
+                            f"Could not discover packs: {exc}"
+                        )
+
+                    (
+                        pack_count,
+                        packs_changed,
+                        pack_runtime_sources,
+                    ) = sync_packs(
+                        agent_key
+                    )
+
+                    new_enabled_sources.update(
+                        pack_runtime_sources_by_key(
+                            pack_runtime_sources
+                        )
+                    )
+
+                    refresh_dynamic_journal_sources(
+                        pack_runtime_sources
+                    )
+
                     current_file_sources = {
                         source_key
                         for source_key, source
@@ -2532,19 +2655,6 @@ def main():
 
                     active_file_sources = current_file_sources
                     enabled_sources = new_enabled_sources
-
-                    try:
-                        discover_pack_catalog(
-                            agent_key
-                        )
-                    except Exception as exc:
-                        log(
-                            f"Could not discover packs: {exc}"
-                        )
-
-                    pack_count, packs_changed = sync_packs(
-                        agent_key
-                    )
 
                     if packs_changed:
                         families = (

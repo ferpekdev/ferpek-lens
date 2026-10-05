@@ -2,8 +2,7 @@ id: fail2ban.unban
 
 name: IP unbanned by Fail2ban
 
-sources:
-  - fail2ban
+source_family: fail2ban
 
 match:
   regex: '.*\[(?P<jail>[^\]]+)\]\s+Unban\s+(?P<ip>[0-9a-fA-F:.]+)\s*$'

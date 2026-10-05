@@ -1,6 +1,6 @@
 id: postfix
 name: Postfix
-version: 0.1.0
+version: 0.2.0
 author: FERPEK
 description: Interpretation of Postfix mail transport logs.
 
@@ -11,7 +11,30 @@ compatibility:
 sources:
   - mail-file
 
+platforms:
+  linux:
+    sources:
+      - id: mail-file
+        family: postfix
+        discovery:
+          - type: file
+            paths:
+              - /var/log/mail.log
+              - /var/log/maillog
+
+          - type: journal
+            units:
+              - postfix.service
+
+        manual:
+          fields:
+            - id: log_path
+              label: Postfix mail log
+              type: path
+              required: true
+
 origin: official
+
 category:
   id: mail
   label: Mail

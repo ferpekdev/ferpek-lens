@@ -2,8 +2,7 @@ id: fail2ban.repeated_bans
 
 name: Repeated Fail2ban bans
 
-sources:
-  - fail2ban
+source_family: fail2ban
 
 match:
   regex: '.*\[(?P<jail>[^\]]+)\]\s+Ban\s+(?P<ip>[0-9a-fA-F:.]+)\s*$'

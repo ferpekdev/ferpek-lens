@@ -711,7 +711,7 @@ function Sidebar({
 
   const [hostCount, setHostCount] = useState(0)
   const [findingCount, setFindingCount] = useState(0)
-  const [packCount, setPackCount] = useState(0)
+  const [packUpdateCount] = useState(0)
 
   async function loadSidebarCounts() {
     try {
@@ -741,21 +741,6 @@ function Sidebar({
         setFindingCount(0)
       }
 
-      if (canViewPacks) {
-        const response = await fetch('/api/v1/packs')
-
-        if (response.ok) {
-          const packsData = await response.json()
-
-          setPackCount(
-            Array.isArray(packsData?.packs)
-              ? packsData.packs.length
-              : 0,
-          )
-        }
-      } else {
-        setPackCount(0)
-      }
     } catch (err) {
       console.error(
         'Could not load sidebar counters:',
@@ -858,9 +843,9 @@ function Sidebar({
           >
                         Packs
 
-            {packCount > 0 && (
+            {packUpdateCount > 0 && (
               <span className="nav-count host-nav-count">
-                {packCount}
+                {packUpdateCount}
               </span>
             )}
           </NavLink>
@@ -2643,7 +2628,9 @@ function HostDetail({
   const [hostPackConfigError, setHostPackConfigError] =
     useState('')
   const [hostPackFilter, setHostPackFilter] =
-    useState<'all' | 'active' | 'available' | 'unavailable'>('all')
+    useState<
+      'all' | 'active' | 'available' | 'disabled' | 'unavailable'
+    >('active')
   const [hostPackSearch, setHostPackSearch] = useState('')
   const [sourcesDirty, setSourcesDirty] = useState(false)
   const [savingSources, setSavingSources] = useState(false)
@@ -2684,14 +2671,23 @@ function HostDetail({
       findingStatus(finding.severity) === 'warning',
   )
 
+  const disabledHostPacks = hostPacks.filter(
+    (pack) =>
+      pack.assigned &&
+      !pack.enabled &&
+      pack.globally_enabled,
+  )
+
   const availableHostPacks = hostPacks.filter(
     (pack) =>
-      !(pack.enabled && pack.can_activate) &&
+      !pack.assigned &&
+      pack.globally_enabled &&
       pack.discovery_status !== 'unavailable',
   )
 
   const unavailableHostPacks = hostPacks.filter(
     (pack) =>
+      !pack.globally_enabled ||
       pack.discovery_status === 'unavailable',
   )
 
@@ -2704,11 +2700,18 @@ function HostDetail({
         pack.enabled &&
         pack.can_activate
 
+      const disabled =
+        pack.assigned &&
+        !pack.enabled &&
+        pack.globally_enabled
+
       const unavailable =
+        !pack.globally_enabled ||
         pack.discovery_status === 'unavailable'
 
       const available =
-        !active &&
+        !pack.assigned &&
+        pack.globally_enabled &&
         !unavailable
 
       if (
@@ -2721,6 +2724,13 @@ function HostDetail({
       if (
         hostPackFilter === 'available' &&
         !available
+      ) {
+        return false
+      }
+
+      if (
+        hostPackFilter === 'disabled' &&
+        !disabled
       ) {
         return false
       }
@@ -2823,7 +2833,9 @@ function HostDetail({
 
     let statusLabel = 'Legacy'
 
-    if (pack.discovery_status === 'detected') {
+    if (!pack.globally_enabled) {
+      statusLabel = 'Globally disabled'
+    } else if (pack.discovery_status === 'detected') {
       statusLabel = 'Detected automatically'
     } else if (
       pack.discovery_status === 'configured'
@@ -2896,7 +2908,13 @@ function HostDetail({
               active ? 'active' : 'inactive'
             }`}
           >
-            {active ? 'Active' : 'Inactive'}
+            {active
+              ? 'Active'
+              : !pack.globally_enabled
+                ? 'Globally disabled'
+                : pack.assigned && !pack.enabled
+                  ? 'Disabled'
+                  : 'Available'}
           </span>
 
           {hasPermission(
@@ -2928,15 +2946,18 @@ function HostDetail({
                 data-tooltip={
                   active
                     ? 'Disable pack'
-                    : pack.can_activate
-                      ? 'Activate pack'
-                      : pack.discovery_status ===
-                          'needs_configuration'
-                        ? 'Configure this pack first'
-                        : 'Pack unavailable'
+                    : !pack.globally_enabled
+                      ? 'Pack is disabled globally'
+                      : pack.can_activate
+                        ? 'Activate pack'
+                        : pack.discovery_status ===
+                            'needs_configuration'
+                          ? 'Configure this pack first'
+                          : 'Pack unavailable'
                 }
                 disabled={
                   hostPackChanging === pack.id ||
+                  !pack.globally_enabled ||
                   (!active && !pack.can_activate)
                 }
                 onClick={() =>
@@ -3436,8 +3457,6 @@ function HostDetail({
   const online = Boolean(
     agent.last_seen && now - agent.last_seen <= 60,
   )
-
-  const hostSources = sources.filter((source) => source.enabled)
 
   const sourceEvents = events.filter((event) => {
     if (
@@ -3945,6 +3964,11 @@ function HostDetail({
                     'available',
                     'Available',
                     availableHostPacks.length,
+                  ],
+                  [
+                    'disabled',
+                    'Disabled',
+                    disabledHostPacks.length,
                   ],
                   [
                     'unavailable',
@@ -5216,6 +5240,10 @@ function Packs({
   const [packs, setPacks] = useState<ApiPack[]>([])
   const [loading, setLoading] = useState(true)
   const [packSearch, setPackSearch] = useState("")
+  const [packView, setPackView] =
+    useState<'installed' | 'disabled' | 'available' | 'updates'>(
+      'installed',
+    )
 
   const [viewPack, setViewPack] = useState<ApiPack | null>(null)
   const [editPackWarning, setEditPackWarning] = useState<ApiPack | null>(null)
@@ -5811,7 +5839,36 @@ function Packs({
   const normalizedPackSearch =
     packSearch.trim().toLowerCase()
 
+  const installedPacks = packs.filter(
+    (pack) => pack.installed,
+  )
+
+  const disabledPacks = packs.filter(
+    (pack) => pack.installed && !pack.enabled,
+  )
+
   const filteredPacks = packs.filter((pack) => {
+    if (
+      packView === 'installed' &&
+      !pack.installed
+    ) {
+      return false
+    }
+
+    if (
+      packView === 'disabled' &&
+      !(pack.installed && !pack.enabled)
+    ) {
+      return false
+    }
+
+    if (
+      packView === 'available' ||
+      packView === 'updates'
+    ) {
+      return false
+    }
+
     if (!normalizedPackSearch) {
       return true
     }
@@ -5877,20 +5934,50 @@ function Packs({
       </div>
 
       <div className="pack-tabs">
-        <button className="filter-button selected">
+        <button
+          type="button"
+          className={`filter-button ${
+            packView === 'installed'
+              ? 'selected'
+              : ''
+          }`}
+          onClick={() => setPackView('installed')}
+        >
           Installed
+          <span className="host-pack-filter-count">
+            {installedPacks.length}
+          </span>
         </button>
 
         <button
+          type="button"
+          className={`filter-button ${
+            packView === 'disabled'
+              ? 'selected'
+              : ''
+          }`}
+          onClick={() => setPackView('disabled')}
+        >
+          Disabled
+          <span className="host-pack-filter-count">
+            {disabledPacks.length}
+          </span>
+        </button>
+
+        <button
+          type="button"
           className="filter-button"
           disabled
+          title="Pack catalog support is not implemented yet."
         >
           Available
         </button>
 
         <button
+          type="button"
           className="filter-button"
           disabled
+          title="Pack update discovery is not implemented yet."
         >
           Updates
         </button>
@@ -5922,7 +6009,9 @@ function Packs({
           </div>
         ) : filteredPacks.length === 0 ? (
           <div className="empty-state">
-            No packs installed.
+            {packView === 'disabled'
+              ? 'No packs are disabled.'
+              : 'No packs installed.'}
           </div>
         ) : (
           <div className="packs-list">

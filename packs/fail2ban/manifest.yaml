@@ -1,6 +1,6 @@
 id: fail2ban
 name: Fail2ban
-version: 0.1.0
+version: 0.2.1
 author: FERPEK
 description: Interpretation of Fail2ban bans, unbans and repeated hostile activity.
 
@@ -10,6 +10,27 @@ compatibility:
 
 sources:
   - fail2ban
+
+platforms:
+  linux:
+    sources:
+      - id: fail2ban
+        family: fail2ban
+        discovery:
+          - type: file
+            paths:
+              - /var/log/fail2ban.log
+
+          - type: journal
+            units:
+              - fail2ban.service
+
+        manual:
+          fields:
+            - id: log_path
+              label: Fail2ban log
+              type: path
+              required: true
 
 origin: official
 

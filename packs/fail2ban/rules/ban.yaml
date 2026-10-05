@@ -2,8 +2,7 @@ id: fail2ban.ban
 
 name: IP banned by Fail2ban
 
-sources:
-  - fail2ban
+source_family: fail2ban
 
 match:
   regex: '.*\[(?P<jail>[^\]]+)\]\s+Ban\s+(?P<ip>[0-9a-fA-F:.]+)\s*$'
