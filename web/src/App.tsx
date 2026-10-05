@@ -2663,6 +2663,27 @@ function HostDetail({
       pack.can_activate,
   )
 
+  const latestRelevantActivity =
+    relevantApiEvents.length > 0
+      ? Math.max(
+          ...relevantApiEvents.map(
+            (event) => event.event_time,
+          ),
+        )
+      : null
+
+  const criticalHostFindings = findings.filter(
+    (finding) =>
+      finding.status === 'open' &&
+      findingStatus(finding.severity) === 'critical',
+  )
+
+  const warningHostFindings = findings.filter(
+    (finding) =>
+      finding.status === 'open' &&
+      findingStatus(finding.severity) === 'warning',
+  )
+
   const availableHostPacks = hostPacks.filter(
     (pack) =>
       !(pack.enabled && pack.can_activate) &&
@@ -3556,34 +3577,33 @@ function HostDetail({
           <div className="panel">
             <div className="panel-header">
               <div>
-                <h2>Monitoring</h2>
-                <p>Current FERPEK coverage</p>
+                <h2>Activity</h2>
+                <p>Current FERPEK activity</p>
               </div>
             </div>
 
             <div className="host-property">
-              <span>Monitor</span>
+              <span>Relevant activity</span>
+              <strong>{relevantApiEvents.length}</strong>
+            </div>
+
+            <div className="host-property">
+              <span>Latest activity</span>
               <strong>
-                {hostSources.some((source) => source.enabled)
-                  ? 'Enabled'
-                  : 'Disabled'}
+                {latestRelevantActivity
+                  ? formatAge(latestRelevantActivity)
+                  : 'None'}
               </strong>
             </div>
 
             <div className="host-property">
-              <span>Log Explorer</span>
-              <strong>
-                {hostSources.some(
-                  (source) => source.enabled && source.send_events,
-                )
-                  ? 'Enabled'
-                  : 'Disabled'}
-              </strong>
+              <span>Critical findings</span>
+              <strong>{criticalHostFindings.length}</strong>
             </div>
 
             <div className="host-property">
-              <span>Recent events</span>
-              <strong>{events.length}</strong>
+              <span>Warning findings</span>
+              <strong>{warningHostFindings.length}</strong>
             </div>
           </div>
         </div>

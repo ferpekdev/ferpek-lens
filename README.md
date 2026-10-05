@@ -8,6 +8,9 @@ The goal is simple:
 
 **Spend less time digging through logs and more time understanding what actually happened.**
 
+> **FERPEK Lens is currently under active development.**
+> Expect breaking changes, limited platform support and a small initial pack catalog.
+
 ## What it does
 
 A lightweight agent reads configured log sources on a host and uses packs to understand events from different services.
@@ -26,7 +29,7 @@ That is intentional. I don't want FERPEK Lens to become another system that simp
 
 ## Current state
 
-FERPEK Lens is still early and I'm actively building and testing it.
+FERPEK Lens is still early and is being actively developed and tested.
 
 Right now it has:
 
@@ -39,8 +42,59 @@ Right now it has:
 - Declarative YAML packs
 - One-time agent enrollment
 - Retention controls
+- Local authentication and role-based access control
+- LDAP and Active Directory authentication
 
-Current packs include OpenSSH, Fail2ban, Nginx and Postfix. There's still plenty to improve.
+### Official packs
+
+The current official pack catalog is intentionally small while the pack system is being hardened.
+
+Current packs include:
+
+- OpenSSH
+- Nginx
+- Fail2ban
+- Postfix
+
+### Platform support
+
+The agent is currently focused on Linux and has been primarily tested on Debian-based systems.
+
+Support for additional Linux distributions and other operating systems is planned, but is not considered mature yet.
+
+### Current limitations
+
+FERPEK Lens is not production-ready yet.
+
+Current limitations include:
+
+- Limited official pack coverage
+- Linux support currently focused on Debian-based systems
+- No Windows agent support yet
+- Installation and upgrade workflows are still being improved
+- Documentation is still being expanded
+
+The current focus is on making the core platform, agent, pack system and official packs reliable before expanding support further.
+
+### Quick start
+
+The recommended deployment method is Docker.
+
+Installation instructions are still being finalized and tested before the first public release.
+
+A complete quick start guide will be added once the clean installation workflow has been validated from scratch.
+
+### Roadmap
+
+Current priorities include:
+
+- Expand official pack coverage
+- Improve installation and upgrade workflows
+- Broaden Linux distribution support
+- Add support for additional operating systems
+- Improve documentation and onboarding
+- Expand pack development tooling
+
 
 ## Why I'm building it
 
