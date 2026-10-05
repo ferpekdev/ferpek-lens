@@ -1,53 +1,127 @@
-# FERPEK Lens
+<p align="center">
+  <img src="docs/assets/ferpek-logo.svg" alt="FERPEK" width="260">
+</p>
 
-FERPEK Lens is an open-source log analysis platform for system administrators.
+<h1 align="center">FERPEK Lens</h1>
 
-A lightweight agent reads logs on your hosts, packs understand what those logs mean, and the server surfaces Relevant activity and Findings in one place.
+<p align="center">
+  <strong>Open-source log analysis for system administrators.</strong>
+</p>
+
+<p align="center">
+  Turn infrastructure logs into relevant activity and actionable findings.
+</p>
+
+<p align="center">
+  <img alt="License" src="https://img.shields.io/badge/license-AGPL--3.0--only-blue">
+  <img alt="Status" src="https://img.shields.io/badge/status-active%20development-orange">
+  <img alt="Agent" src="https://img.shields.io/badge/agent-Linux-lightgrey">
+</p>
+
+<p align="center">
+  <a href="https://ferpek.com/products/lens/">Website</a>
+</p>
+
+> **FERPEK Lens is currently under active development.**  
+> Expect breaking changes, limited platform support and a small initial pack catalog.
+
+<p align="center">
+  <img src="docs/assets/overview-v2.png" alt="FERPEK Lens overview">
+</p>
+
+## What is FERPEK Lens?
+
+FERPEK Lens is an open-source log analysis platform built for system administrators.
+
+A lightweight agent reads logs directly from your hosts. Packs understand the structure and meaning of those logs, and the FERPEK Lens server turns them into Relevant activity and Findings that are easier to understand and act on.
 
 The goal is simple:
 
 **Spend less time digging through logs and more time understanding what actually happened.**
 
-> **FERPEK Lens is currently under active development.**
-> Expect breaking changes, limited platform support and a small initial pack catalog.
+FERPEK Lens is not intended to blindly collect everything and leave you with another massive pile of logs to search through.
 
-## What it does
+The idea is to identify what is actually useful, surface important activity and provide enough context to investigate what happened.
 
-A lightweight agent reads configured log sources on a host and uses packs to understand events from different services.
+That is intentional. I don't want FERPEK Lens to become another system that simply moves the log problem somewhere else.
 
-FERPEK Lens currently separates what it sees into:
+## How it works
 
-- **Raw**: the original log events.
-- **Relevant**: events that FERPEK Lens understands and considers useful to surface.
-- **Findings**: patterns or situations that may actually need attention.
+The basic architecture is:
 
-Raw logs are optional.
+```text
+Host
+│
+|- Logs
+│
+v
+FERPEK Agent
+│
+|- Source discovery
+|- Pack processing
+|- Relevant activity
+L- Findings
+│
+v
+FERPEK Lens Server
+│
+v
+Web interface
+```
 
-You can let FERPEK Lens analyse logs locally and only send Relevant activity and Findings to the server.
+Agents run on monitored hosts and communicate with the central FERPEK Lens server.
 
-That is intentional. I don't want FERPEK Lens to become another system that simply gives you more logs to read.
+Packs define how different services are discovered, where their logs are located and how those logs should be interpreted.
 
-## Current state
+The server provides a central place to manage hosts, packs, activity, findings and configuration.
 
-FERPEK Lens is still early and is being actively developed and tested.
+## Host visibility
 
-Right now it has:
+Each enrolled host has its own view where you can inspect its status, active packs, activity and findings.
 
-- A central server and Web UI
-- A lightweight Linux agent
-- Source discovery
-- Configurable monitoring and raw log collection
-- Relevant activity
+<p align="center">
+  <img src="docs/assets/host-overview-v2.png" alt="FERPEK Lens host overview">
+</p>
+
+## Relevant activity
+
+Not every log entry deserves the same level of attention.
+
+FERPEK Lens can use packs to identify events that are useful enough to surface as Relevant activity without necessarily treating them as problems.
+
+The goal is to give administrators a useful operational timeline without requiring them to manually search through raw log files.
+
+## Findings
+
+Findings represent events or conditions that may require attention.
+
+Instead of showing only the raw log line, a pack can provide additional context about what happened and why it may matter.
+
+<p align="center">
+  <img src="docs/assets/findings-v2.png" alt="FERPEK Lens findings">
+</p>
+
+## Packs
+
+Packs are how FERPEK Lens understands different services.
+
+A pack can define things such as:
+
+- Supported platforms
+- Service discovery
+- Log sources
+- Parsing rules
+- Relevant events
 - Findings
-- Declarative YAML packs
-- One-time agent enrollment
-- Retention controls
-- Local authentication and role-based access control
-- LDAP and Active Directory authentication
+- Detection logic
 
-### Official packs
+The long-term goal is for packs to be portable and largely declarative, allowing FERPEK Lens to support more services without having to modify the core agent for every integration.
 
-The current official pack catalog is intentionally small while the pack system is being hardened.
+Packs can also support more than one operating system where appropriate and adapt their behaviour according to the platform reported by the agent.
+
+## Official packs
+
+The official pack catalog is currently intentionally small while the pack architecture is being developed and hardened.
 
 Current packs include:
 
@@ -56,65 +130,117 @@ Current packs include:
 - Fail2ban
 - Postfix
 
-### Platform support
+More infrastructure services will be added over time.
 
-The agent is currently focused on Linux and has been primarily tested on Debian-based systems.
+## Current state
 
-Support for additional Linux distributions and other operating systems is planned, but is not considered mature yet.
+FERPEK Lens is still early and is being actively developed and tested.
 
-### Current limitations
+The platform currently includes:
 
-FERPEK Lens is not production-ready yet.
+- Central FERPEK Lens server
+- Web interface
+- Lightweight Linux agent
+- Host enrollment
+- One-time enrollment tokens
+- Source discovery
+- Pack management
+- Relevant activity
+- Findings
+- Raw log collection controls
+- Declarative pack support
+- Retention controls
+- Local authentication
+- Role-based access control
+- LDAP authentication
+- Active Directory authentication
+- Light and dark themes
 
-Current limitations include:
+## Platform support
 
-- Limited official pack coverage
+The agent is currently focused on Linux and has primarily been developed and tested on Debian-based systems.
+
+Support for additional Linux distributions and other operating systems is planned, but should not currently be considered mature or officially supported.
+
+Windows support is not available yet.
+
+## Current limitations
+
+FERPEK Lens is **not production-ready yet**.
+
+Some of the current limitations are:
+
+- Small official pack catalog
 - Linux support currently focused on Debian-based systems
 - No Windows agent support yet
-- Installation and upgrade workflows are still being improved
-- Documentation is still being expanded
+- Installation workflows are still being improved
+- Upgrade workflows are still being designed
+- Documentation is still limited
+- The pack system is still evolving
+- Breaking changes may occur between versions
 
-The current focus is on making the core platform, agent, pack system and official packs reliable before expanding support further.
+The current priority is to make the core platform, agent architecture and pack system reliable before significantly expanding the number of supported services and platforms.
 
-### Quick start
+## Quick start
 
-The recommended deployment method is Docker.
+The recommended deployment method for the FERPEK Lens server will be Docker.
 
-Installation instructions are still being finalized and tested before the first public release.
+The installation workflow is currently being finalized and tested.
 
-A complete quick start guide will be added once the clean installation workflow has been validated from scratch.
+A complete quick start will be added once a clean installation has been validated from scratch.
 
-### Roadmap
+The intended experience is roughly:
+
+```text
+Deploy FERPEK Lens
+        │
+        ▼
+Create the initial administrator
+        │
+        ▼
+Install an agent on a host
+        │
+        ▼
+Enroll the host
+        │
+        ▼
+Discover available services
+        │
+        ▼
+Enable packs
+        │
+        ▼
+View Relevant activity and Findings
+```
+
+For now, FERPEK Lens should be treated as development software.
+
+## Roadmap
 
 Current priorities include:
 
-- Expand official pack coverage
+- Expand the official pack catalog
+- Improve pack portability
+- Complete more declarative packs
 - Improve installation and upgrade workflows
 - Broaden Linux distribution support
 - Add support for additional operating systems
-- Improve documentation and onboarding
-- Expand pack development tooling
+- Improve documentation
+- Improve onboarding
+- Improve pack development tooling
+- Make it easier for the community to build and share packs
 
+The roadmap is intentionally flexible while the core architecture is still evolving.
 
 ## Why I'm building it
 
 I'm a sysadmin myself, a fairly new one. I've been doing this professionally for about two years.
 
-Maybe it was laziness that made me start this project.
+A lot of infrastructure troubleshooting eventually ends up in the same place: logs.
 
-Over those two years, I kept running into the same thing: reading logs.
+Sometimes I know exactly what I'm looking for. Other times I'm opening different files, grepping through them, comparing timestamps and trying to understand what actually happened.
 
-I know, reading logs is one of the fundamentals of our job. But wouldn't it be easier to have one place where you could quickly see the logs that actually matter?
-
-Of course, every log matters depending on what you're troubleshooting. But imagine some emails aren't being sent and they're getting stuck in the mail queue.
-
-Normally, you connect to the server, open the logs, figure out roughly when it happened, search through them, correlate what you find, and eventually understand what went wrong.
-
-Wouldn't it be easier to open a platform that already tells you what happened, where it happened and when it happened, so you can start troubleshooting immediately?
-
-That's basically FERPEK Lens.
-
-A log reader designed to make infrastructure logs easier to understand and easier to act on.
+FERPEK Lens started as an attempt to make that process easier for myself.
 
 I originally made this mostly for myself.
 
@@ -124,7 +250,7 @@ I made a name, a logo, branding, an interface, agents, packs... and somehow I've
 
 So I decided to make it open source.
 
-If other sysadmins find it useful, great. And if the community wants to contribute new packs, rules, improvements or completely new ideas, even better.
+If other sysadmins find it useful, great! And if the community wants to contribute new packs, rules, improvements or completely new ideas, even better!
 
 I've already learned a lot while building FERPEK Lens, and that's also a big part of why I'm continuing to work on it.
 
@@ -132,9 +258,15 @@ I'd like FERPEK Lens to become sustainable in the future, while keeping the core
 
 I'm also completely open to constructive criticism.
 
-You can tell me something is badly designed, that I'm solving the problem the wrong way, etc...
+You can tell me something is badly designed, that I'm solving the problem the wrong way, etc... I'll listen to the feedback, good or bad.
 
-But I'll listen to the feedback, good or bad.
+## Contributing
+
+FERPEK Lens is still at an early stage, but contributions, ideas and feedback are welcome.
+
+The contribution workflow and pack development documentation will be expanded as the project becomes more stable.
+
+For now, GitHub issues can be used for bug reports, suggestions and discussion.
 
 ## Website
 
