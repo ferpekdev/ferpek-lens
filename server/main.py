@@ -68,7 +68,7 @@ RETENTION_CLEANUP_INTERVAL = 3600
 
 retention_stop_event = threading.Event()
 
-SERVER_VERSION = "0.3.0"
+SERVER_VERSION = "0.4.0"
 
 app = FastAPI(
     title="ferpek-server",
