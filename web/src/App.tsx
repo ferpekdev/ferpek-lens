@@ -6517,8 +6517,8 @@ function Packs({
               </p>
 
               <p className="pack-edit-validation">
-                This action only applies to installed packs.
-                Built-in official packs cannot be deleted.
+                The pack can be installed again later from the registry
+                if it is available there.
               </p>
             </div>
 

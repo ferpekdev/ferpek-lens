@@ -10,7 +10,6 @@ COPY server/install-agent.sh .
 COPY agent/agent.py .
 
 COPY agent/ferpek_lens /app/ferpek_lens
-COPY packs /app/packs
 
 VOLUME ["/data"]
 

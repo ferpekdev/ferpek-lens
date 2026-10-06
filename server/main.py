@@ -53,7 +53,6 @@ SECRET_KEY_PATH = Path(
     )
 )
 
-BUILTIN_PACKS_PATH = Path("/app/packs")
 INSTALLED_PACKS_PATH = Path("/data/packs")
 PACK_ENGINE_PATH = Path("/app/ferpek_lens/pack_engine.py")
 
@@ -7225,34 +7224,30 @@ def validate_pack_archive(archive_path: Path):
 
 
 def iter_pack_dirs():
-    seen = set()
+    if not INSTALLED_PACKS_PATH.exists():
+        return
 
-    for base_path in (
-        INSTALLED_PACKS_PATH,
-        BUILTIN_PACKS_PATH,
-    ):
-        if not base_path.exists():
+    for pack_dir in sorted(INSTALLED_PACKS_PATH.iterdir()):
+        if not pack_dir.is_dir():
             continue
 
-        for pack_dir in sorted(base_path.iterdir()):
-            if not pack_dir.is_dir():
-                continue
+        if pack_dir.is_symlink():
+            continue
 
-            if pack_dir.is_symlink():
-                continue
+        if pack_dir.name.startswith("."):
+            continue
 
-            manifest = read_pack_manifest(pack_dir)
+        manifest = read_pack_manifest(pack_dir)
 
-            if manifest is None:
-                continue
+        if manifest is None:
+            continue
 
-            pack_id = manifest.get("id")
+        pack_id = manifest.get("id")
 
-            if not pack_id or pack_id in seen:
-                continue
+        if not pack_id:
+            continue
 
-            seen.add(pack_id)
-            yield pack_dir
+        yield pack_dir
 
 
 def get_pack_dir(pack_id: str) -> Path:
@@ -7389,6 +7384,17 @@ def save_pack_changes(
     # packs.edit
 
     source_pack_dir = get_pack_dir(pack_id)
+    source_manifest = read_pack_manifest(source_pack_dir)
+
+    if source_manifest is None:
+        raise HTTPException(
+            400,
+            "Pack manifest not found",
+        )
+
+    source_origin = str(
+        source_manifest.get("origin", "local")
+    ).strip().lower()
 
     if not payload.files:
         raise HTTPException(
@@ -7495,18 +7501,10 @@ def save_pack_changes(
             manifest.get("origin", "local")
         ).strip().lower()
 
-        builtin_dir = BUILTIN_PACKS_PATH / pack_id
-
-        if (
-            origin == "official"
-            and not builtin_dir.is_dir()
-        ):
+        if origin != source_origin:
             raise HTTPException(
                 400,
-                (
-                    "Only built-in packs may use "
-                    "origin official"
-                ),
+                "Pack origin cannot be changed",
             )
 
         destination = (
@@ -7692,6 +7690,7 @@ def validate_pack_changes(
 def install_pack_archive(
     archive_path: Path,
     allow_official: bool = False,
+    force_replace: bool = False,
 ):
     max_uncompressed_size = 25 * 1024 * 1024
     max_files = 250
@@ -7819,25 +7818,28 @@ def install_pack_archive(
                     "Existing installed pack has an invalid version",
                 )
 
-            if incoming_version == installed_version:
-                raise HTTPException(
-                    409,
-                    (
-                        f"Pack {pack_id} version "
-                        f"{version} is already installed"
-                    ),
-                )
+            if not force_replace:
+                if incoming_version == installed_version:
+                    raise HTTPException(
+                        409,
+                        (
+                            f"Pack {pack_id} version "
+                            f"{version} is already installed"
+                        ),
+                    )
 
-            if incoming_version < installed_version:
-                raise HTTPException(
-                    409,
-                    (
-                        "Pack downgrade is not allowed: "
-                        f"{current_version} -> {version}"
-                    ),
-                )
+                if incoming_version < installed_version:
+                    raise HTTPException(
+                        409,
+                        (
+                            "Pack downgrade is not allowed: "
+                            f"{current_version} -> {version}"
+                        ),
+                    )
 
-            install_action = "updated"
+                install_action = "updated"
+            else:
+                install_action = "restored"
 
             backup_dir = (
                 INSTALLED_PACKS_PATH
@@ -8017,7 +8019,6 @@ def set_pack_state(
 
 @app.post("/api/v1/packs/{pack_id}/revert", dependencies=[Depends(require_permission("packs.manage"))])
 def revert_pack_to_official(pack_id: str):
-    # Future permission: packs.edit
     pack_id = str(pack_id).strip()
 
     if not pack_id:
@@ -8035,68 +8036,61 @@ def revert_pack_to_official(pack_id: str):
             "Invalid pack id",
         )
 
-    builtin_dir = BUILTIN_PACKS_PATH / pack_id
     installed_dir = INSTALLED_PACKS_PATH / pack_id
-
-    if (
-        not builtin_dir.is_dir()
-        or builtin_dir.is_symlink()
-    ):
-        raise HTTPException(
-            404,
-            "Official built-in pack not found",
-        )
-
-    builtin_manifest = read_pack_manifest(
-        builtin_dir
-    )
-
-    if (
-        builtin_manifest is None
-        or str(builtin_manifest.get("id", "")).strip()
-        != pack_id
-    ):
-        raise HTTPException(
-            400,
-            "Invalid official built-in pack",
-        )
-
-    if not installed_dir.exists():
-        raise HTTPException(
-            400,
-            "Pack has no local override",
-        )
 
     if (
         not installed_dir.is_dir()
         or installed_dir.is_symlink()
     ):
         raise HTTPException(
-            400,
-            "Invalid local pack override",
+            404,
+            "Installed pack not found",
         )
 
-    installed_manifest = read_pack_manifest(
-        installed_dir
+    registry = fetch_pack_registry()
+
+    entry = next(
+        (
+            item
+            for item in registry["packs"]
+            if (
+                isinstance(item, dict)
+                and str(item.get("id", "")).strip()
+                == pack_id
+                and str(item.get("origin", "")).strip().lower()
+                == "official"
+            )
+        ),
+        None,
     )
 
-    if (
-        installed_manifest is None
-        or str(installed_manifest.get("id", "")).strip()
-        != pack_id
-    ):
+    if entry is None:
         raise HTTPException(
-            400,
-            "Invalid local pack override",
+            404,
+            "Official pack not found in registry",
         )
 
-    shutil.rmtree(installed_dir)
+    archive_path = None
 
-    return {
-        "ok": True,
-        "id": pack_id,
-        "reverted": True,
-    }
+    try:
+        archive_path = download_registry_pack(entry)
+
+        result = install_pack_archive(
+            archive_path,
+            allow_official=True,
+            force_replace=True,
+        )
+
+        result["reverted"] = True
+        return result
+    finally:
+        if (
+            archive_path is not None
+            and archive_path.exists()
+        ):
+            archive_path.unlink(
+                missing_ok=True
+            )
 
 
 @app.delete("/api/v1/packs/{pack_id}", dependencies=[Depends(require_permission("packs.manage"))])
@@ -8119,15 +8113,7 @@ def delete_pack(pack_id: str):
             "Invalid pack id",
         )
 
-    builtin_dir = BUILTIN_PACKS_PATH / pack_id
     installed_dir = INSTALLED_PACKS_PATH / pack_id
-
-    if builtin_dir.is_dir():
-        raise HTTPException(
-            400,
-            "Built-in packs cannot be deleted. "
-            "Use revert to remove a local override.",
-        )
 
     if not installed_dir.exists():
         raise HTTPException(
@@ -8515,33 +8501,21 @@ def get_registry_pack_status(entry: dict):
             return "invalid", None
 
     local_manifest = None
+    candidate = INSTALLED_PACKS_PATH / pack_id
 
-    for base_path in (
-        INSTALLED_PACKS_PATH,
-        BUILTIN_PACKS_PATH,
+    if (
+        candidate.is_dir()
+        and not candidate.is_symlink()
     ):
-        candidate = base_path / pack_id
+        manifest = read_pack_manifest(candidate)
 
-        if not candidate.is_dir():
-            continue
-
-        if candidate.is_symlink():
-            continue
-
-        manifest = read_pack_manifest(
-            candidate
-        )
-
-        if manifest is None:
-            continue
-
-        if str(
-            manifest.get("id", "")
-        ).strip() != pack_id:
-            continue
-
-        local_manifest = manifest
-        break
+        if (
+            manifest is not None
+            and str(
+                manifest.get("id", "")
+            ).strip() == pack_id
+        ):
+            local_manifest = manifest
 
     if local_manifest is None:
         return "available", None
@@ -8825,29 +8799,19 @@ def list_packs():
                     and server_compatible
                 ),
                 "blocked_reason": blocked_reason,
-                "overridden": (
-                    pack_dir.parent == INSTALLED_PACKS_PATH
-                    and (
-                        BUILTIN_PACKS_PATH
-                        / str(manifest["id"])
-                    ).is_dir()
-                ),
+                "overridden": False,
                 "capabilities": {
                     "edit": True,
                     "revert": (
-                        pack_dir.parent == INSTALLED_PACKS_PATH
-                        and (
-                            BUILTIN_PACKS_PATH
-                            / str(manifest["id"])
-                        ).is_dir()
+                        str(
+                            manifest.get(
+                                "origin",
+                                "local",
+                            )
+                        ).strip().lower()
+                        == "official"
                     ),
-                    "delete": (
-                        pack_dir.parent == INSTALLED_PACKS_PATH
-                        and not (
-                            BUILTIN_PACKS_PATH
-                            / str(manifest["id"])
-                        ).is_dir()
-                    ),
+                    "delete": True,
                 },
             }
         )
