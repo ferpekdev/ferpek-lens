@@ -226,6 +226,27 @@ http://SERVER_IP:5173
 
 On first use, create the initial administrator account.
 
+### Install an agent
+
+In the FERPEK Lens web interface, open **Hosts** and select **Add host**.
+
+FERPEK will generate a temporary enrollment token and show the installation command for the host.
+
+Run that command on a Debian-based Linux host using an account with root or sudo privileges.
+
+The installer will:
+
+- install the required Python dependencies;
+- download the FERPEK Agent from the FERPEK Lens server;
+- install and enable the `ferpek-agent.service` systemd service;
+- enroll the host using the temporary token;
+- store the agent credentials locally with restricted permissions;
+- remove the temporary enrollment token after enrollment.
+
+After the host connects, FERPEK Lens will automatically discover supported services and available packs.
+
+You can then enable the packs you want for that host from the web interface.
+
 The intended experience is roughly:
 
 ```text
