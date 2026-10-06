@@ -183,33 +183,70 @@ The current priority is to make the core platform, agent architecture and pack s
 
 ## Quick start
 
-The recommended deployment method for the FERPEK Lens server will be Docker.
+Docker Compose is currently the recommended way to run the FERPEK Lens server.
 
-The installation workflow is currently being finalized and tested.
+### Requirements
 
-A complete quick start will be added once a clean installation has been validated from scratch.
+- Docker
+- Docker Compose
+- Git
+
+### Install the server
+
+Clone the repository:
+
+```bash
+git clone https://github.com/ferpekdev/ferpek-lens.git
+cd ferpek-lens
+```
+
+Create the local configuration file:
+
+```bash
+cp .env.example .env
+```
+
+Start FERPEK Lens:
+
+```bash
+docker compose up -d --build
+```
+
+Check that the services are running:
+
+```bash
+docker compose ps
+```
+
+Then open the web interface:
+
+```text
+http://SERVER_IP:5173
+```
+
+On first use, create the initial administrator account.
 
 The intended experience is roughly:
 
 ```text
 Deploy FERPEK Lens
         │
-        ▼
+        v
 Create the initial administrator
         │
-        ▼
+        v
 Install an agent on a host
         │
-        ▼
+        v
 Enroll the host
         │
-        ▼
+        v
 Discover available services
         │
-        ▼
+        v
 Enable packs
         │
-        ▼
+        v
 View Relevant activity and Findings
 ```
 
