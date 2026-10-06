@@ -36,6 +36,12 @@ if [ -z "$TOKEN" ]; then
     exit 1
 fi
 
+if [ -f /etc/ferpek/agent.json ]; then
+    echo "FERPEK Agent is already enrolled on this host." >&2
+    echo "Remove the existing agent before performing a new installation." >&2
+    exit 1
+fi
+
 echo
 echo "FERPEK Agent Installer"
 echo "======================="
@@ -120,17 +126,47 @@ systemctl restart ferpek-agent.service
 
 echo "[7/7] Verifying FERPEK Agent..."
 
-sleep 2
+attempt=0
 
-if systemctl is-active --quiet ferpek-agent.service; then
-    echo
-    echo "FERPEK Agent installed successfully."
-    echo
-    systemctl --no-pager --full status ferpek-agent.service || true
-else
+while [ "$attempt" -lt 15 ]; do
+    if [ -f /etc/ferpek/agent.json ] &&
+       ! grep -q '^FERPEK_ENROLL_TOKEN=' /etc/ferpek/environment 2>/dev/null; then
+        break
+    fi
+
+    if ! systemctl is-active --quiet ferpek-agent.service; then
+        break
+    fi
+
+    attempt=$((attempt + 1))
+    sleep 1
+done
+
+if ! systemctl is-active --quiet ferpek-agent.service; then
     echo
     echo "FERPEK Agent failed to start."
     echo
     journalctl -u ferpek-agent.service -n 30 --no-pager || true
     exit 1
 fi
+
+if [ ! -f /etc/ferpek/agent.json ]; then
+    echo
+    echo "FERPEK Agent started but enrollment did not complete." >&2
+    echo
+    journalctl -u ferpek-agent.service -n 30 --no-pager || true
+    exit 1
+fi
+
+if grep -q '^FERPEK_ENROLL_TOKEN=' /etc/ferpek/environment 2>/dev/null; then
+    echo
+    echo "FERPEK Agent enrollment token was not cleared." >&2
+    echo
+    journalctl -u ferpek-agent.service -n 30 --no-pager || true
+    exit 1
+fi
+
+echo
+echo "FERPEK Agent installed and enrolled successfully."
+echo
+systemctl --no-pager --full status ferpek-agent.service || true

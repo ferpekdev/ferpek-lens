@@ -2271,7 +2271,7 @@ function Systems({
 
               <div>
                 <strong>Linux</strong>
-                <span>Debian, Ubuntu and other Linux distributions</span>
+                <span>Debian-based Linux distributions</span>
               </div>
             </div>
 
