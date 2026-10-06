@@ -1,4 +1,4 @@
-site_name: FERPEK Lens
+site_name: Lens
 site_description: Open-source log analysis for system administrators.
 site_url: https://docs.ferpek.com/
 
@@ -7,7 +7,7 @@ repo_url: https://github.com/ferpekdev/ferpek-lens
 
 theme:
   name: material
-  logo: assets/ferpek-logo.svg
+  logo: assets/ferpek-logo-white.png
   favicon: assets/ferpek-logo.svg
   features:
     - navigation.sections
@@ -17,11 +17,15 @@ theme:
     - search.highlight
   palette:
     - scheme: default
+      primary: custom
+      accent: custom
       media: "(prefers-color-scheme: light)"
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - scheme: slate
+      primary: custom
+      accent: custom
       media: "(prefers-color-scheme: dark)"
       toggle:
         icon: material/brightness-4
@@ -43,6 +47,9 @@ nav:
 
   - Troubleshooting:
       - Overview: troubleshooting/index.md
+
+extra_css:
+  - stylesheets/ferpek.css
 
 markdown_extensions:
   - admonition
