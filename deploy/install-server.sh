@@ -3,7 +3,7 @@
 set -eu
 
 INSTALL_DIR="/opt/ferpek"
-FERPEK_VERSION="latest"
+FERPEK_VERSION="0.4.0"
 FERPEK_WEB_PORT="5173"
 FERPEK_PORT="8000"
 
@@ -18,7 +18,7 @@ Usage:
 
 Options:
   --version VERSION       FERPEK Lens version to install.
-                          Default: latest
+                          Default: 0.4.0
 
   --web-port PORT         Web interface port.
                           Default: 5173
