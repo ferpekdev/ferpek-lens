@@ -52,3 +52,6 @@ Thumbs.db
 *.before-*
 *.bak
 *.pre-*
+
+# MkDocs build output
+/site/
