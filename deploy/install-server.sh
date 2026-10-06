@@ -2,7 +2,7 @@
 
 set -eu
 
-INSTALL_DIR="/opt/ferpek"
+INSTALL_DIR="/opt/ferpek-lens-server"
 FERPEK_VERSION="0.4.0"
 FERPEK_WEB_PORT="5173"
 FERPEK_PORT="8000"
@@ -27,7 +27,7 @@ Options:
                           Default: 8000
 
   --install-dir PATH      Installation directory.
-                          Default: /opt/ferpek
+                          Default: /opt/ferpek-lens-server
 
   -h, --help              Show this help message.
 USAGE
@@ -143,7 +143,7 @@ install_base_dependencies() {
     export DEBIAN_FRONTEND=noninteractive
 
     apt-get update
-    apt-get install -y ca-certificates curl
+    apt-get install -y ca-certificates curl iproute2
 }
 
 install_docker() {
@@ -193,6 +193,40 @@ install_compose
 if ! systemctl is-active --quiet docker; then
     log "Starting Docker..."
     systemctl enable --now docker
+fi
+
+log "Checking for existing FERPEK Lens deployments..."
+
+EXISTING_PROJECTS="$(
+    docker ps -a \
+        --format '{{.Label "com.docker.compose.project"}}' \
+        2>/dev/null |
+    grep -E '^(ferpek|ferpek-lens)$' |
+    sort -u || true
+)"
+
+if [ -n "$EXISTING_PROJECTS" ]; then
+    log ""
+    log "Existing FERPEK-related Docker Compose project detected:"
+    printf '%s\n' "$EXISTING_PROJECTS"
+    log ""
+    fail "Refusing to overwrite an existing FERPEK Lens deployment."
+fi
+
+port_in_use() {
+    PORT="$1"
+
+    ss -H -ltn 2>/dev/null |
+        awk '{print $4}' |
+        grep -Eq "(^|:)$PORT$"
+}
+
+if port_in_use "$FERPEK_WEB_PORT"; then
+    fail "Web port $FERPEK_WEB_PORT is already in use."
+fi
+
+if port_in_use "$FERPEK_PORT"; then
+    fail "Server port $FERPEK_PORT is already in use."
 fi
 
 log "[4/7] Preparing installation directory..."
