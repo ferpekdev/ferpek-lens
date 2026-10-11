@@ -3,6 +3,7 @@
 import json
 import os
 import socket
+import subprocess
 import tempfile
 import time
 import urllib.error
@@ -236,6 +237,90 @@ def prepare_update_staging(version: str) -> dict:
         "compose_file": str(staged_compose),
         "env_file": str(staged_env),
     }
+
+
+def run_compose(
+    arguments: tuple[str, ...],
+    *,
+    timeout: int,
+) -> subprocess.CompletedProcess:
+    allowed_commands = {
+        ("ps",),
+        ("pull",),
+    }
+
+    if arguments not in allowed_commands:
+        raise ValueError(
+            "Unsupported Docker Compose operation."
+        )
+
+    compose_file = INSTALL_DIR / "compose.yml"
+    env_file = INSTALL_DIR / ".env"
+
+    if not compose_file.is_file():
+        raise ValueError(
+            "FERPEK compose.yml file was not found."
+        )
+
+    if not env_file.is_file():
+        raise ValueError(
+            "FERPEK .env file was not found."
+        )
+
+    try:
+        return subprocess.run(
+            [
+                "docker",
+                "compose",
+                *arguments,
+            ],
+            cwd=INSTALL_DIR,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            check=True,
+        )
+
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "Docker CLI was not found."
+        ) from exc
+
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "Docker Compose operation timed out."
+        ) from exc
+
+    except subprocess.CalledProcessError as exc:
+        detail = (
+            exc.stderr.strip()
+            or exc.stdout.strip()
+            or f"exit code {exc.returncode}"
+        )
+
+        raise RuntimeError(
+            f"Docker Compose operation failed: {detail}"
+        ) from exc
+
+
+def compose_status() -> str:
+    result = run_compose(
+        ("ps",),
+        timeout=30,
+    )
+
+    return result.stdout
+
+
+def compose_pull() -> str:
+    result = run_compose(
+        ("pull",),
+        timeout=600,
+    )
+
+    return result.stdout
 
 
 def replace_file_atomically(
