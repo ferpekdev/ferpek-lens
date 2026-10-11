@@ -2245,6 +2245,50 @@ def start_lens_update(
     }
 
 
+@app.post(
+    "/api/v1/updates/recover",
+    dependencies=[
+        Depends(
+            require_permission("settings.manage")
+        )
+    ],
+)
+def recover_lens_update():
+    try:
+        result = query_update_helper({
+            "action": "recover_update",
+        })
+
+    except RuntimeError as exc:
+        error = str(exc)
+
+        status_code = (
+            503
+            if error.startswith(
+                "Update helper unavailable:"
+            )
+            else 409
+        )
+
+        raise HTTPException(
+            status_code=status_code,
+            detail=error,
+        ) from exc
+
+    return {
+        "status": result.get(
+            "status",
+            "unknown",
+        ),
+        "installed_version": result.get(
+            "installed_version"
+        ),
+        "health": result.get(
+            "health"
+        ),
+    }
+
+
 @app.get(
     "/api/v1/updates/status",
     dependencies=[
