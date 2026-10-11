@@ -274,8 +274,20 @@ if curl -fsSL \
     mv "$UPDATER_TMP" "$INSTALL_DIR/update-helper.py"
     chmod 755 "$INSTALL_DIR/update-helper.py"
 
-    mv "$UPDATER_SERVICE_TMP" \
+    awk \
+        -v install_dir="$INSTALL_DIR" \
+        '{
+            gsub("/opt/ferpek-lens-server", install_dir)
+            print
+        }' \
+        "$UPDATER_SERVICE_TMP" \
+        > "$UPDATER_SERVICE_TMP.rendered"
+
+    mv "$UPDATER_SERVICE_TMP.rendered" \
         /etc/systemd/system/ferpek-lens-updater.service
+
+    rm -f "$UPDATER_SERVICE_TMP"
+
     chmod 644 \
         /etc/systemd/system/ferpek-lens-updater.service
 
