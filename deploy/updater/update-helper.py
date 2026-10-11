@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import tempfile
@@ -770,6 +771,144 @@ def replace_file_atomically(
     finally:
         if temp_path.exists():
             temp_path.unlink()
+
+
+def cleanup_staging_directory(
+    staging_dir: Path,
+) -> None:
+    staging_root = (
+        INSTALL_DIR / ".update-staging"
+    ).resolve()
+
+    staging_dir = Path(
+        staging_dir
+    ).resolve()
+
+    if staging_dir == staging_root:
+        raise RuntimeError(
+            "Refusing to remove the staging root directory."
+        )
+
+    try:
+        staging_dir.relative_to(
+            staging_root
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            "Staging directory is outside "
+            "the FERPEK staging directory."
+        ) from exc
+
+    if not staging_dir.exists():
+        return
+
+    if not staging_dir.is_dir():
+        raise RuntimeError(
+            "Staging path is not a directory."
+        )
+
+    shutil.rmtree(
+        staging_dir
+    )
+
+    try:
+        staging_root.rmdir()
+    except OSError:
+        pass
+
+
+def prune_update_backups(
+    *,
+    keep: int = 5,
+    protected_paths: tuple[Path, ...] = (),
+) -> list[str]:
+    if keep < 1:
+        raise ValueError(
+            "Backup retention must keep at least one backup."
+        )
+
+    backup_root = (
+        INSTALL_DIR / "backups"
+    ).resolve()
+
+    if not backup_root.exists():
+        return []
+
+    if not backup_root.is_dir():
+        raise RuntimeError(
+            "FERPEK backup path is not a directory."
+        )
+
+    protected = set()
+
+    for protected_path in protected_paths:
+        resolved = Path(
+            protected_path
+        ).resolve()
+
+        try:
+            resolved.relative_to(
+                backup_root
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                "Protected backup path is outside "
+                "the FERPEK backup directory."
+            ) from exc
+
+        protected.add(
+            resolved
+        )
+
+    candidates = []
+
+    for path in backup_root.iterdir():
+        if not path.is_dir():
+            continue
+
+        try:
+            time.strptime(
+                path.name,
+                "%Y%m%d-%H%M%S",
+            )
+        except ValueError:
+            continue
+
+        candidates.append(
+            path
+        )
+
+    candidates.sort(
+        key=lambda path: path.name,
+        reverse=True,
+    )
+
+    retained = {
+        path.resolve()
+        for path in candidates[:keep]
+    }
+
+    retained.update(
+        protected
+    )
+
+    removed = []
+
+    for path in candidates:
+        resolved = path.resolve()
+
+        if resolved in retained:
+            continue
+
+        shutil.rmtree(
+            path
+        )
+
+        removed.append(
+            str(path)
+        )
+
+    return removed
 
 
 def apply_staged_deployment(
