@@ -247,6 +247,7 @@ def run_compose(
     allowed_commands = {
         ("ps",),
         ("pull",),
+        ("up", "-d"),
     }
 
     if arguments not in allowed_commands:
@@ -318,6 +319,15 @@ def compose_pull() -> str:
     result = run_compose(
         ("pull",),
         timeout=600,
+    )
+
+    return result.stdout
+
+
+def compose_up() -> str:
+    result = run_compose(
+        ("up", "-d"),
+        timeout=300,
     )
 
     return result.stdout
