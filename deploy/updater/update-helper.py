@@ -477,6 +477,8 @@ def check_ferpek_health(
 def replace_file_atomically(
     source: Path,
     destination: Path,
+    *,
+    mode: int = 0o600,
 ) -> None:
     if not source.is_file():
         raise ValueError(
@@ -497,7 +499,7 @@ def replace_file_atomically(
             handle.flush()
             os.fsync(handle.fileno())
 
-        temp_path.chmod(0o600)
+        temp_path.chmod(mode)
 
         os.replace(
             temp_path,
