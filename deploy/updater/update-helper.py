@@ -53,7 +53,9 @@ def parse_version(value: object) -> tuple[int, int, int]:
     return tuple(int(part) for part in parts)
 
 
-def validate_release(version: str) -> dict:
+def fetch_release_compose(
+    version: str,
+) -> tuple[dict, bytes]:
     parse_version(version)
 
     url = (
@@ -80,13 +82,17 @@ def validate_release(version: str) -> dict:
 
             if content_length is not None:
                 try:
-                    if int(content_length) > MAX_RELEASE_FILE_SIZE:
-                        raise ValueError(
-                            "Release deployment file is too large."
-                        )
-                except ValueError as exc:
-                    if str(exc) == "Release deployment file is too large.":
-                        raise
+                    size = int(content_length)
+                except ValueError:
+                    size = None
+
+                if (
+                    size is not None
+                    and size > MAX_RELEASE_FILE_SIZE
+                ):
+                    raise ValueError(
+                        "Release deployment file is too large."
+                    )
 
             data = response.read(
                 MAX_RELEASE_FILE_SIZE + 1
@@ -105,7 +111,7 @@ def validate_release(version: str) -> dict:
 
     except urllib.error.URLError as exc:
         raise ValueError(
-            f"Could not reach the FERPEK release repository: "
+            "Could not reach the FERPEK release repository: "
             f"{exc.reason}"
         ) from exc
 
@@ -139,17 +145,28 @@ def validate_release(version: str) -> dict:
             "FERPEK Lens deployment."
         )
 
-    return {
+    metadata = {
         "version": version,
         "compose_url": url,
         "validated": True,
     }
 
+    return metadata, data
+
+
+def validate_release(version: str) -> dict:
+    metadata, _ = fetch_release_compose(
+        version
+    )
+
+    return metadata
 
 def prepare_update_staging(version: str) -> dict:
     parse_version(version)
 
-    release = validate_release(version)
+    release, compose_data = fetch_release_compose(
+        version
+    )
 
     current_env = INSTALL_DIR / ".env"
 
@@ -176,45 +193,6 @@ def prepare_update_staging(version: str) -> dict:
 
     staged_compose = staging_dir / "compose.yml"
     staged_env = staging_dir / ".env"
-
-    request = urllib.request.Request(
-        release["compose_url"],
-        headers={
-            "User-Agent": "FERPEK-Lens-Updater",
-            "Accept": "text/plain",
-        },
-    )
-
-    try:
-        with urllib.request.urlopen(
-            request,
-            timeout=10,
-        ) as response:
-            compose_data = response.read(
-                MAX_RELEASE_FILE_SIZE + 1
-            )
-    except urllib.error.HTTPError as exc:
-        raise ValueError(
-            f"Could not download FERPEK Lens v{version}: "
-            f"HTTP {exc.code}."
-        ) from exc
-    except urllib.error.URLError as exc:
-        raise ValueError(
-            "Could not reach the FERPEK release repository: "
-            f"{exc.reason}"
-        ) from exc
-
-    if len(compose_data) > MAX_RELEASE_FILE_SIZE:
-        raise ValueError(
-            "Release deployment file is too large."
-        )
-
-    try:
-        compose_data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise ValueError(
-            "Release deployment file is not valid UTF-8."
-        ) from exc
 
     staged_compose.write_bytes(
         compose_data
