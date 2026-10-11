@@ -724,15 +724,34 @@ def apply_staged_deployment(
 
     staged_env = staging_dir / ".env"
     staged_compose = staging_dir / "compose.yml"
+    staged_helper = staging_dir / "update-helper.py"
+    staged_service = (
+        staging_dir
+        / "ferpek-lens-updater.service"
+    )
 
     replace_file_atomically(
         staged_env,
         INSTALL_DIR / ".env",
+        mode=0o600,
     )
 
     replace_file_atomically(
         staged_compose,
         INSTALL_DIR / "compose.yml",
+        mode=0o600,
+    )
+
+    replace_file_atomically(
+        staged_helper,
+        INSTALL_DIR / "update-helper.py",
+        mode=0o755,
+    )
+
+    replace_file_atomically(
+        staged_service,
+        UPDATER_SERVICE_FILE,
+        mode=0o644,
     )
 
 
@@ -932,14 +951,14 @@ def perform_update(
         version
     )
 
-    deployment_applied = False
+    deployment_mutation_started = False
 
     try:
+        deployment_mutation_started = True
+
         apply_staged_deployment(
             Path(staging["staging_dir"])
         )
-
-        deployment_applied = True
 
         compose_pull()
         compose_up()
@@ -971,7 +990,7 @@ def perform_update(
             "error": None,
         }
 
-        if deployment_applied:
+        if deployment_mutation_started:
             rollback["attempted"] = True
 
             try:
