@@ -256,21 +256,38 @@ curl -fsSL \
 UPDATER_URL="$REPOSITORY_RAW_BASE/$DEPLOY_REF/deploy/updater/update-helper.py"
 UPDATER_SERVICE_URL="$REPOSITORY_RAW_BASE/$DEPLOY_REF/deploy/updater/ferpek-lens-updater.service"
 
-curl -fsSL \
+UPDATER_AVAILABLE=0
+UPDATER_TMP="$INSTALL_DIR/.update-helper.py.tmp"
+UPDATER_SERVICE_TMP="$INSTALL_DIR/.ferpek-lens-updater.service.tmp"
+
+rm -f "$UPDATER_TMP" "$UPDATER_SERVICE_TMP"
+
+if curl -fsSL \
     "$UPDATER_URL" \
-    -o "$INSTALL_DIR/update-helper.py"
-
-[ -s "$INSTALL_DIR/update-helper.py" ] ||
-    fail "Downloaded update helper is empty."
-
-chmod 755 "$INSTALL_DIR/update-helper.py"
-
-curl -fsSL \
+    -o "$UPDATER_TMP" &&
+   curl -fsSL \
     "$UPDATER_SERVICE_URL" \
-    -o /etc/systemd/system/ferpek-lens-updater.service
+    -o "$UPDATER_SERVICE_TMP" &&
+   [ -s "$UPDATER_TMP" ] &&
+   [ -s "$UPDATER_SERVICE_TMP" ]; then
 
-[ -s /etc/systemd/system/ferpek-lens-updater.service ] ||
-    fail "Downloaded updater service definition is empty."
+    mv "$UPDATER_TMP" "$INSTALL_DIR/update-helper.py"
+    chmod 755 "$INSTALL_DIR/update-helper.py"
+
+    mv "$UPDATER_SERVICE_TMP" \
+        /etc/systemd/system/ferpek-lens-updater.service
+    chmod 644 \
+        /etc/systemd/system/ferpek-lens-updater.service
+
+    UPDATER_AVAILABLE=1
+
+    log "Automatic update helper is available for $DEPLOY_REF."
+else
+    rm -f "$UPDATER_TMP" "$UPDATER_SERVICE_TMP"
+
+    log "Automatic update helper is not available for $DEPLOY_REF."
+    log "Continuing installation without automatic updates."
+fi
 
 cat > "$INSTALL_DIR/.env" <<EOF_ENV
 FERPEK_VERSION=$FERPEK_VERSION
@@ -281,8 +298,10 @@ EOF_ENV
 
 chmod 600 "$INSTALL_DIR/.env"
 
-systemctl daemon-reload
-systemctl enable --now ferpek-lens-updater.service
+if [ "$UPDATER_AVAILABLE" -eq 1 ]; then
+    systemctl daemon-reload
+    systemctl enable --now ferpek-lens-updater.service
+fi
 
 log "[6/7] Pulling FERPEK Lens container images..."
 
