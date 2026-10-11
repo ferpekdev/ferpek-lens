@@ -2047,23 +2047,58 @@ def require_permission(permission_key: str):
     return dependency
 
 
-def query_update_helper_status():
-    request = json.dumps(
-        {"action": "status"}
-    ).encode("utf-8") + b"\n"
+class UpdateStartRequest(BaseModel):
+    version: str = Field(
+        min_length=5,
+        max_length=32,
+        pattern=r"^[0-9]+\.[0-9]+\.[0-9]+$",
+    )
+
+
+def query_update_helper(
+    request_payload: dict,
+    *,
+    timeout: float = 2.0,
+) -> dict:
+    request = (
+        json.dumps(request_payload).encode("utf-8")
+        + b"\n"
+    )
 
     try:
         with socket.socket(
             socket.AF_UNIX,
             socket.SOCK_STREAM,
         ) as client:
-            client.settimeout(2.0)
+            client.settimeout(timeout)
+
             client.connect(
                 FERPEK_UPDATER_SOCKET
             )
+
             client.sendall(request)
 
-            response = client.recv(4096)
+            chunks = []
+            total_size = 0
+
+            while True:
+                chunk = client.recv(4096)
+
+                if not chunk:
+                    break
+
+                chunks.append(chunk)
+                total_size += len(chunk)
+
+                if total_size > 65536:
+                    raise RuntimeError(
+                        "Update helper response is too large."
+                    )
+
+                if b"\n" in chunk:
+                    break
+
+            response = b"".join(chunks)
 
     except (
         OSError,
@@ -2077,6 +2112,11 @@ def query_update_helper_status():
         raise RuntimeError(
             "Update helper returned an empty response."
         )
+
+    response = response.split(
+        b"\n",
+        1,
+    )[0]
 
     try:
         payload = json.loads(
@@ -2119,6 +2159,12 @@ def query_update_helper_status():
     return result
 
 
+def query_update_helper_status():
+    return query_update_helper({
+        "action": "status",
+    })
+
+
 @app.get(
     "/api/v1/updates/helper-status",
     dependencies=[
@@ -2149,6 +2195,99 @@ def get_update_helper_status():
             "installed_version"
         ),
         "error": None,
+    }
+
+
+@app.post(
+    "/api/v1/updates/start",
+    dependencies=[
+        Depends(
+            require_permission("settings.manage")
+        )
+    ],
+)
+def start_lens_update(
+    payload: UpdateStartRequest,
+):
+    try:
+        result = query_update_helper({
+            "action": "start_update",
+            "version": payload.version,
+        })
+
+    except RuntimeError as exc:
+        error = str(exc)
+
+        status_code = (
+            503
+            if error.startswith(
+                "Update helper unavailable:"
+            )
+            else 409
+        )
+
+        raise HTTPException(
+            status_code=status_code,
+            detail=error,
+        ) from exc
+
+    return {
+        "operation_id": result.get(
+            "operation_id"
+        ),
+        "status": result.get(
+            "status",
+            "unknown",
+        ),
+        "target_version": result.get(
+            "target_version"
+        ),
+    }
+
+
+@app.get(
+    "/api/v1/updates/status",
+    dependencies=[
+        Depends(
+            require_permission("settings.view")
+        )
+    ],
+)
+def get_lens_update_status():
+    try:
+        result = query_update_helper({
+            "action": "update_status",
+        })
+
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=str(exc),
+        ) from exc
+
+    return {
+        "operation_id": result.get(
+            "operation_id"
+        ),
+        "status": result.get(
+            "status",
+            "unknown",
+        ),
+        "target_version": result.get(
+            "target_version"
+        ),
+        "started_at": result.get(
+            "started_at"
+        ),
+        "finished_at": result.get(
+            "finished_at"
+        ),
+        "result": result.get(
+            "result"
+        ),
+        "error": result.get(
+            "error"
+        ),
     }
 
 
