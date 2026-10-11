@@ -1347,6 +1347,91 @@ def recover_update() -> dict:
             "The current update state does not require recovery."
         )
 
+    recovery = state.get("recovery")
+
+    recovery_action = "stabilize"
+
+    if recovery is not None:
+        if not isinstance(recovery, dict):
+            raise RuntimeError(
+                "Interrupted update recovery context is invalid."
+            )
+
+        previous_version = recovery.get(
+            "previous_version"
+        )
+        backup_dir_value = recovery.get(
+            "backup_dir"
+        )
+        phase = recovery.get(
+            "phase"
+        )
+
+        if phase not in {
+            "backup_ready",
+            "mutation_started",
+        }:
+            raise RuntimeError(
+                "Interrupted update recovery phase is invalid."
+            )
+
+        if not isinstance(previous_version, str):
+            raise RuntimeError(
+                "Interrupted update previous version is invalid."
+            )
+
+        try:
+            parse_version(
+                previous_version
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                "Interrupted update previous version is invalid."
+            ) from exc
+
+        if not isinstance(backup_dir_value, str):
+            raise RuntimeError(
+                "Interrupted update backup path is invalid."
+            )
+
+        backup_root = (
+            INSTALL_DIR / "backups"
+        ).resolve()
+
+        backup_dir = Path(
+            backup_dir_value
+        ).resolve()
+
+        try:
+            backup_dir.relative_to(
+                backup_root
+            )
+        except ValueError as exc:
+            raise RuntimeError(
+                "Interrupted update backup path is outside "
+                "the FERPEK backup directory."
+            ) from exc
+
+        if not backup_dir.is_dir():
+            raise RuntimeError(
+                "Interrupted update backup directory "
+                "was not found."
+            )
+
+        if phase == "mutation_started":
+            restore_deployment_backup(
+                backup_dir
+            )
+
+            systemd_daemon_reload()
+
+            recovery_action = "rollback"
+
+    compose_pull()
+    compose_up()
+
+    health = check_ferpek_health()
+
     installed_version = read_installed_version()
 
     if installed_version is None:
@@ -1363,9 +1448,16 @@ def recover_update() -> dict:
             "Installed FERPEK version is invalid."
         ) from exc
 
-    compose_up()
-
-    health = check_ferpek_health()
+    if (
+        recovery is not None
+        and recovery.get("phase") == "mutation_started"
+        and installed_version
+        != recovery["previous_version"]
+    ):
+        raise RuntimeError(
+            "Interrupted update rollback version "
+            "verification failed."
+        )
 
     recovered_state = dict(state)
 
@@ -1375,6 +1467,8 @@ def recover_update() -> dict:
         "result": {
             "installed_version":
                 installed_version,
+            "recovery_action":
+                recovery_action,
             "health": health,
         },
         "error": None,
@@ -1389,6 +1483,7 @@ def recover_update() -> dict:
         "action": "recover_update",
         "status": "recovered",
         "installed_version": installed_version,
+        "recovery_action": recovery_action,
         "health": health,
     }
 
