@@ -46,6 +46,23 @@ REPOSITORY_RAW_BASE = os.environ.get(
 )
 
 
+class UpdateTransactionError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        rollback: dict,
+    ) -> None:
+        self.message = message
+        self.rollback = rollback
+
+        super().__init__(
+            json.dumps({
+                "message": message,
+                "rollback": rollback,
+            })
+        )
+
+
 def parse_version(value: object) -> tuple[int, int, int]:
     if not isinstance(value, str):
         raise ValueError("Version must be a string.")
@@ -1083,11 +1100,9 @@ def perform_update(
                     ),
                 })
 
-        raise RuntimeError(
-            json.dumps({
-                "message": str(update_error),
-                "rollback": rollback,
-            })
+        raise UpdateTransactionError(
+            str(update_error),
+            rollback,
         ) from update_error
 
 
@@ -1258,8 +1273,45 @@ def run_update_job(
             "error": None,
         })
 
+    except UpdateTransactionError as exc:
+        current_state = read_update_state() or {}
+
+        rollback_failed = (
+            exc.rollback.get("attempted") is True
+            and exc.rollback.get("status") == "failed"
+        )
+
+        failed_state = {
+            "operation_id": operation_id,
+            "status": (
+                "recovery_required"
+                if rollback_failed
+                else "failed"
+            ),
+            "target_version": version,
+            "started_at": started_at,
+            "finished_at": int(time.time()),
+            "result": {
+                "rollback": exc.rollback,
+            },
+            "error": str(exc),
+        }
+
+        recovery = current_state.get(
+            "recovery"
+        )
+
+        if recovery is not None:
+            failed_state["recovery"] = recovery
+
+        set_update_state(
+            failed_state
+        )
+
     except Exception as exc:
-        set_update_state({
+        current_state = read_update_state() or {}
+
+        failed_state = {
             "operation_id": operation_id,
             "status": "failed",
             "target_version": version,
@@ -1267,7 +1319,18 @@ def run_update_job(
             "finished_at": int(time.time()),
             "result": None,
             "error": str(exc),
-        })
+        }
+
+        recovery = current_state.get(
+            "recovery"
+        )
+
+        if recovery is not None:
+            failed_state["recovery"] = recovery
+
+        set_update_state(
+            failed_state
+        )
 
     finally:
         UPDATE_LOCK.release()
@@ -1283,12 +1346,14 @@ def start_update_job(
     if (
         existing_state is not None
         and existing_state.get("status")
-        == "interrupted"
+        in {
+            "interrupted",
+            "recovery_required",
+        }
     ):
         raise RuntimeError(
-            "The previous update was interrupted "
-            "and requires recovery before another "
-            "update can be started."
+            "The previous update requires recovery "
+            "before another update can be started."
         )
 
     if not UPDATE_LOCK.acquire(
@@ -1342,7 +1407,10 @@ def recover_update() -> dict:
             "There is no interrupted update to recover."
         )
 
-    if state.get("status") != "interrupted":
+    if state.get("status") not in {
+        "interrupted",
+        "recovery_required",
+    }:
         raise RuntimeError(
             "The current update state does not require recovery."
         )
