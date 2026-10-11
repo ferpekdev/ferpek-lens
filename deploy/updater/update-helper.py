@@ -626,6 +626,129 @@ def prepare_backup() -> dict:
     }
 
 
+def perform_update(
+    version: str,
+) -> dict:
+    target_parsed = parse_version(version)
+
+    installed_version = read_installed_version()
+
+    if installed_version is None:
+        raise ValueError(
+            "Installed FERPEK version could not be determined."
+        )
+
+    try:
+        installed_parsed = parse_version(
+            installed_version
+        )
+    except ValueError as exc:
+        raise ValueError(
+            "Installed FERPEK version is invalid."
+        ) from exc
+
+    if target_parsed == installed_parsed:
+        raise ValueError(
+            "Target version is already installed."
+        )
+
+    if target_parsed < installed_parsed:
+        raise ValueError(
+            "Downgrades are not supported by update."
+        )
+
+    backup = prepare_backup()
+
+    staging = prepare_update_staging(
+        version
+    )
+
+    deployment_applied = False
+
+    try:
+        apply_staged_deployment(
+            Path(staging["staging_dir"])
+        )
+
+        deployment_applied = True
+
+        compose_pull()
+        compose_up()
+
+        health = check_ferpek_health()
+
+        actual_version = read_installed_version()
+
+        if actual_version != version:
+            raise RuntimeError(
+                "Installed version does not match "
+                "the requested target version."
+            )
+
+        return {
+            "service": "ferpek-lens-updater",
+            "action": "update",
+            "status": "success",
+            "previous_version": installed_version,
+            "installed_version": actual_version,
+            "backup_dir": backup["backup_dir"],
+            "health": health,
+        }
+
+    except Exception as update_error:
+        rollback = {
+            "attempted": False,
+            "status": "not_required",
+            "error": None,
+        }
+
+        if deployment_applied:
+            rollback["attempted"] = True
+
+            try:
+                restore_deployment_backup(
+                    Path(backup["backup_dir"])
+                )
+
+                compose_pull()
+                compose_up()
+
+                rollback_health = (
+                    check_ferpek_health()
+                )
+
+                restored_version = (
+                    read_installed_version()
+                )
+
+                if restored_version != installed_version:
+                    raise RuntimeError(
+                        "Rollback version verification failed."
+                    )
+
+                rollback.update({
+                    "status": "success",
+                    "restored_version":
+                        restored_version,
+                    "health": rollback_health,
+                })
+
+            except Exception as rollback_error:
+                rollback.update({
+                    "status": "failed",
+                    "error": str(
+                        rollback_error
+                    ),
+                })
+
+        raise RuntimeError(
+            json.dumps({
+                "message": str(update_error),
+                "rollback": rollback,
+            })
+        ) from update_error
+
+
 def read_installed_version() -> str | None:
     env_file = INSTALL_DIR / ".env"
 
