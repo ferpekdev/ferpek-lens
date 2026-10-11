@@ -6093,7 +6093,7 @@ function Packs({
           </p>
         </div>
 
-        <div className="pack-row-actions">
+        <div className="pack-row-actions packs-heading-actions">
           <button
             type="button"
             className="secondary-button action-button"
@@ -9606,6 +9606,49 @@ function Settings({
   const [retentionMessage, setRetentionMessage] = useState("")
   const [retentionError, setRetentionError] = useState("")
 
+  const [currentVersion, setCurrentVersion] =
+    useState("...")
+  const [updateChecking, setUpdateChecking] =
+    useState(false)
+  const [updateError, setUpdateError] =
+    useState("")
+  const [updateResult, setUpdateResult] =
+    useState<{
+      lens: {
+        current_version: string
+        latest_version: string | null
+        status:
+          | "up_to_date"
+          | "update_available"
+          | "local_newer"
+          | "unavailable"
+        release_url: string | null
+        error: string | null
+      }
+      packs: {
+        installed: number
+        updates_available: number | null
+        status:
+          | "up_to_date"
+          | "updates_available"
+          | "unavailable"
+        error: string | null
+      }
+    } | null>(null)
+
+  useEffect(() => {
+    fetch("/health")
+      .then((response) => response.json())
+      .then((data) => {
+        if (data?.version) {
+          setCurrentVersion(String(data.version))
+        }
+      })
+      .catch(() => {
+        setCurrentVersion("unknown")
+      })
+  }, [])
+
   useEffect(() => {
     async function loadPackSettings() {
       try {
@@ -9679,6 +9722,55 @@ function Settings({
 
     void loadRetentionSettings()
   }, [])
+
+  async function checkForUpdates() {
+    if (!hasPermission(currentUser, 'settings.view')) {
+      return
+    }
+
+    setUpdateChecking(true)
+    setUpdateError("")
+
+    try {
+      const response = await fetch(
+        "/api/v1/updates/check",
+      )
+
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status}`,
+        )
+      }
+
+      const data = await response.json()
+
+      setUpdateResult(data)
+
+      const lensUnavailable =
+        data?.lens?.status === "unavailable"
+
+      const packsUnavailable =
+        data?.packs?.status === "unavailable"
+
+      if (lensUnavailable || packsUnavailable) {
+        setUpdateError(
+          "One or more update services could not be reached.",
+        )
+      }
+    } catch (error) {
+      console.error(
+        "Could not check for updates:",
+        error,
+      )
+
+      setUpdateError(
+        "Could not check for updates.",
+      )
+    } finally {
+      setUpdateChecking(false)
+    }
+  }
+
 
   async function savePackSettings() {
     if (!hasPermission(currentUser, 'settings.manage')) {
@@ -9875,6 +9967,128 @@ function Settings({
               )}
             </div>
           </div>
+
+          {hasPermission(
+            currentUser,
+            'settings.view',
+          ) && (
+            <div className="settings-group">
+              <div className="settings-group-heading">
+                <h2>Updates</h2>
+                <p>
+                  Check FERPEK Lens and official packs for newer versions.
+                </p>
+              </div>
+
+              <div className="panel settings-list-panel">
+                <div className="settings-list-row">
+                  <div>
+                    <h3>FERPEK Lens</h3>
+                    <p>
+                      Core server and web application.
+                    </p>
+                  </div>
+
+                  <div className="settings-update-values">
+                    <span>
+                      Current
+                      <strong>
+                        v{updateResult?.lens?.current_version || currentVersion}
+                      </strong>
+                    </span>
+
+                    <span>
+                      Latest
+                      <strong>
+                        {updateResult?.lens?.latest_version
+                          ? `v${updateResult.lens.latest_version}`
+                          : "Not checked"}
+                      </strong>
+                    </span>
+
+                    <span>
+                      Status
+                      <strong>
+                        {!updateResult
+                          ? "Not checked"
+                          : updateResult.lens.status === "up_to_date"
+                            ? "Up to date"
+                            : updateResult.lens.status === "update_available"
+                              ? "Update available"
+                              : updateResult.lens.status === "local_newer"
+                                ? "Development version"
+                                : "Unable to check"}
+                      </strong>
+                    </span>
+                  </div>
+                </div>
+
+                <div className="settings-list-row">
+                  <div>
+                    <h3>Official packs</h3>
+                    <p>
+                      Packs distributed through the FERPEK registry.
+                    </p>
+                  </div>
+
+                  <div className="settings-update-values">
+                    <span>
+                      Installed
+                      <strong>
+                        {updateResult
+                          ? updateResult.packs.installed
+                          : "—"}
+                      </strong>
+                    </span>
+
+                    <span>
+                      Updates
+                      <strong>
+                        {updateResult?.packs?.updates_available ??
+                          "Not checked"}
+                      </strong>
+                    </span>
+
+                    <span>
+                      Status
+                      <strong>
+                        {!updateResult
+                          ? "Not checked"
+                          : updateResult.packs.status === "up_to_date"
+                            ? "Up to date"
+                            : updateResult.packs.status === "updates_available"
+                              ? "Updates available"
+                              : "Unable to check"}
+                      </strong>
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              <div className="settings-update-actions">
+                <div>
+                  {updateError && (
+                    <p className="save-error">
+                      {updateError}
+                    </p>
+                  )}
+                </div>
+
+                <button
+                  type="button"
+                  className="secondary-button settings-save-button"
+                  disabled={updateChecking}
+                  onClick={() =>
+                    void checkForUpdates()
+                  }
+                >
+                  {updateChecking
+                    ? "Checking..."
+                    : "Check for updates"}
+                </button>
+              </div>
+            </div>
+          )}
 
           {(hasPermission(currentUser, 'users.view') ||
             hasPermission(currentUser, 'groups.view') ||

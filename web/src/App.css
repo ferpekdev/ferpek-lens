@@ -10854,3 +10854,60 @@ body {
 .activity-row time {
   font-size: 12px;
 }
+
+/* ---------------------------------------------------------
+   Settings — update status
+   --------------------------------------------------------- */
+
+.settings-update-values {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 28px;
+}
+
+.settings-update-values > span {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  color: var(--text-dim);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.settings-update-values strong {
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.settings-update-actions {
+  min-height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 14px;
+}
+
+@media (max-width: 760px) {
+  .settings-update-values {
+    gap: 14px;
+  }
+
+  .settings-update-values > span {
+    align-items: flex-start;
+  }
+
+  .settings-list-row {
+    align-items: flex-start;
+  }
+}
+
+/* Packs page heading actions */
+.packs-heading-actions {
+  margin-left: auto;
+  justify-content: flex-end;
+}

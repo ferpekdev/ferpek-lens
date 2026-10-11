@@ -61,6 +61,11 @@ PACK_REGISTRY_URL = os.environ.get(
     "https://raw.githubusercontent.com/ferpekdev/ferpek-lens-packs/main/index.json",
 )
 
+RELEASE_MANIFEST_URL = os.environ.get(
+    "RELEASE_MANIFEST_URL",
+    "https://raw.githubusercontent.com/ferpekdev/ferpek-lens/main/release.json",
+)
+
 EVENT_RETENTION_DAYS = 14
 RESOLVED_FINDING_RETENTION_DAYS = 90
 RETENTION_CLEANUP_INTERVAL = 3600
@@ -2034,6 +2039,99 @@ def require_permission(permission_key: str):
         return user
 
     return dependency
+
+
+@app.get(
+    "/api/v1/updates/check",
+    dependencies=[
+        Depends(
+            require_permission("settings.view")
+        )
+    ],
+)
+def check_for_updates():
+    result = {
+        "checked_at": int(time.time()),
+        "lens": {
+            "current_version": SERVER_VERSION,
+            "latest_version": None,
+            "status": "unavailable",
+            "release_url": None,
+            "error": None,
+        },
+        "packs": {
+            "installed": sum(
+                1 for _ in iter_pack_dirs()
+            ),
+            "updates_available": None,
+            "status": "unavailable",
+            "error": None,
+        },
+    }
+
+    try:
+        manifest = fetch_release_manifest()
+
+        latest_version = str(
+            manifest["latest"]
+        ).strip()
+
+        current = Version(SERVER_VERSION)
+        latest = Version(latest_version)
+
+        if latest > current:
+            status = "update_available"
+        elif latest < current:
+            status = "local_newer"
+        else:
+            status = "up_to_date"
+
+        result["lens"].update({
+            "latest_version": latest_version,
+            "status": status,
+            "release_url": str(
+                manifest.get(
+                    "release_url",
+                    "",
+                )
+            ).strip() or None,
+        })
+
+    except HTTPException as exc:
+        result["lens"]["error"] = str(
+            exc.detail
+        )
+
+    try:
+        registry = fetch_pack_registry()
+
+        updates_available = 0
+
+        for entry in registry["packs"]:
+            if not isinstance(entry, dict):
+                continue
+
+            status, _ = get_registry_pack_status(
+                entry
+            )
+
+            if status == "update_available":
+                updates_available += 1
+
+        result["packs"].update({
+            "updates_available":
+                updates_available,
+            "status": "up_to_date"
+                if updates_available == 0
+                else "updates_available",
+        })
+
+    except HTTPException as exc:
+        result["packs"]["error"] = str(
+            exc.detail
+        )
+
+    return result
 
 
 @app.post("/api/v1/auth/change-password")
@@ -8184,6 +8282,88 @@ def delete_pack(pack_id: str):
         "id": pack_id,
         "deleted": True,
     }
+
+
+def fetch_release_manifest():
+    max_manifest_size = 256 * 1024
+
+    request = urllib.request.Request(
+        RELEASE_MANIFEST_URL,
+        headers={
+            "User-Agent": f"FERPEK-Lens/{SERVER_VERSION}",
+            "Accept": "application/json",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=10,
+        ) as response:
+            content = response.read(
+                max_manifest_size + 1
+            )
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(
+            502,
+            f"Release service returned HTTP {exc.code}",
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(
+            502,
+            f"Release service unavailable: {exc.reason}",
+        ) from exc
+
+    if len(content) > max_manifest_size:
+        raise HTTPException(
+            502,
+            "Release manifest exceeds size limit",
+        )
+
+    try:
+        manifest = json.loads(
+            content.decode("utf-8")
+        )
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise HTTPException(
+            502,
+            "Release service returned invalid JSON",
+        ) from exc
+
+    if not isinstance(manifest, dict):
+        raise HTTPException(
+            502,
+            "Invalid release manifest",
+        )
+
+    if manifest.get("schema_version") != 1:
+        raise HTTPException(
+            502,
+            "Unsupported release manifest schema",
+        )
+
+    if manifest.get("product") != "ferpek-lens":
+        raise HTTPException(
+            502,
+            "Invalid release manifest product",
+        )
+
+    latest = str(
+        manifest.get("latest", "")
+    ).strip()
+
+    try:
+        Version(latest)
+    except InvalidVersion as exc:
+        raise HTTPException(
+            502,
+            "Release manifest contains an invalid version",
+        ) from exc
+
+    return manifest
 
 
 def fetch_pack_registry():
