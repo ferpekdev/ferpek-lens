@@ -396,78 +396,92 @@ def prepare_update_staging(version: str) -> dict:
     )
     staging_dir.chmod(0o700)
 
-    staged_compose = staging_dir / "compose.yml"
-    staged_env = staging_dir / ".env"
-    staged_helper = staging_dir / "update-helper.py"
-    staged_service = (
-        staging_dir
-        / "ferpek-lens-updater.service"
-    )
-
-    staged_compose.write_bytes(
-        compose_data
-    )
-    staged_compose.chmod(0o600)
-
-    staged_helper.write_bytes(
-        helper_data
-    )
-    staged_helper.chmod(0o755)
-
-    service_text = service_data.decode(
-        "utf-8"
-    )
-
-    rendered_service = service_text.replace(
-        "/opt/ferpek-lens-server",
-        str(INSTALL_DIR),
-    )
-
-    staged_service.write_text(
-        rendered_service,
-        encoding="utf-8",
-    )
-    staged_service.chmod(0o644)
-
-    current_lines = current_env.read_text(
-        encoding="utf-8"
-    ).splitlines()
-
-    output_lines = []
-    version_replaced = False
-
-    for line in current_lines:
-        if (
-            not version_replaced
-            and line.startswith("FERPEK_VERSION=")
-        ):
-            output_lines.append(
-                f"FERPEK_VERSION={version}"
-            )
-            version_replaced = True
-        else:
-            output_lines.append(line)
-
-    if not version_replaced:
-        output_lines.insert(
-            0,
-            f"FERPEK_VERSION={version}",
+    try:
+        staged_compose = staging_dir / "compose.yml"
+        staged_env = staging_dir / ".env"
+        staged_helper = staging_dir / "update-helper.py"
+        staged_service = (
+            staging_dir
+            / "ferpek-lens-updater.service"
         )
 
-    staged_env.write_text(
-        "\n".join(output_lines) + "\n",
-        encoding="utf-8",
-    )
-    staged_env.chmod(0o600)
+        staged_compose.write_bytes(
+            compose_data
+        )
+        staged_compose.chmod(0o600)
 
-    return {
-        "target_version": version,
-        "staging_dir": str(staging_dir),
-        "compose_file": str(staged_compose),
-        "env_file": str(staged_env),
-        "update_helper_file": str(staged_helper),
-        "updater_service_file": str(staged_service),
-    }
+        staged_helper.write_bytes(
+            helper_data
+        )
+        staged_helper.chmod(0o755)
+
+        service_text = service_data.decode(
+            "utf-8"
+        )
+
+        rendered_service = service_text.replace(
+            "/opt/ferpek-lens-server",
+            str(INSTALL_DIR),
+        )
+
+        staged_service.write_text(
+            rendered_service,
+            encoding="utf-8",
+        )
+        staged_service.chmod(0o644)
+
+        current_lines = current_env.read_text(
+            encoding="utf-8"
+        ).splitlines()
+
+        output_lines = []
+        version_replaced = False
+
+        for line in current_lines:
+            if (
+                not version_replaced
+                and line.startswith("FERPEK_VERSION=")
+            ):
+                output_lines.append(
+                    f"FERPEK_VERSION={version}"
+                )
+                version_replaced = True
+            else:
+                output_lines.append(line)
+
+        if not version_replaced:
+            output_lines.insert(
+                0,
+                f"FERPEK_VERSION={version}",
+            )
+
+        staged_env.write_text(
+            "\n".join(output_lines) + "\n",
+            encoding="utf-8",
+        )
+        staged_env.chmod(0o600)
+
+        return {
+            "target_version": version,
+            "staging_dir": str(staging_dir),
+            "compose_file": str(staged_compose),
+            "env_file": str(staged_env),
+            "update_helper_file": str(staged_helper),
+            "updater_service_file": str(staged_service),
+        }
+
+    except Exception:
+        shutil.rmtree(
+            staging_dir,
+            ignore_errors=True,
+        )
+
+        try:
+            staging_root.rmdir()
+        except OSError:
+            pass
+
+        raise
 
 
 def systemd_daemon_reload() -> None:
