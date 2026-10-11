@@ -985,6 +985,12 @@ def perform_update(
 
     backup = prepare_backup()
 
+    set_update_recovery_context(
+        previous_version=installed_version,
+        backup_dir=backup["backup_dir"],
+        phase="backup_ready",
+    )
+
     staging = prepare_update_staging(
         version
     )
@@ -992,6 +998,12 @@ def perform_update(
     deployment_mutation_started = False
 
     try:
+        set_update_recovery_context(
+            previous_version=installed_version,
+            backup_dir=backup["backup_dir"],
+            phase="mutation_started",
+        )
+
         deployment_mutation_started = True
 
         apply_staged_deployment(
@@ -1182,6 +1194,37 @@ def set_update_state(
 ) -> None:
     with UPDATE_STATE_LOCK:
         write_update_state(state)
+
+
+def set_update_recovery_context(
+    *,
+    previous_version: str,
+    backup_dir: str,
+    phase: str,
+) -> None:
+    state = read_update_state()
+
+    if state is None:
+        raise RuntimeError(
+            "Update state is unavailable."
+        )
+
+    if state.get("status") != "running":
+        raise RuntimeError(
+            "Update recovery context can only be "
+            "changed while an update is running."
+        )
+
+    updated_state = dict(state)
+    updated_state["recovery"] = {
+        "previous_version": previous_version,
+        "backup_dir": backup_dir,
+        "phase": phase,
+    }
+
+    set_update_state(
+        updated_state
+    )
 
 
 def run_update_job(
