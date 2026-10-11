@@ -9636,6 +9636,56 @@ function Settings({
       }
     } | null>(null)
 
+  const [updateHelperStatus, setUpdateHelperStatus] =
+    useState<{
+      available: boolean
+      status: string
+      installed_version: string | null
+      error: string | null
+    } | null>(null)
+
+  async function loadUpdateHelperStatus() {
+    try {
+      const response = await fetch(
+        "/api/v1/updates/helper-status",
+      )
+
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status}`,
+        )
+      }
+
+      const data = await response.json()
+
+      setUpdateHelperStatus({
+        available: Boolean(data.available),
+        status: String(
+          data.status ?? "unknown",
+        ),
+        installed_version:
+          data.installed_version
+            ? String(data.installed_version)
+            : null,
+        error:
+          data.error
+            ? String(data.error)
+            : null,
+      })
+    } catch (error) {
+      setUpdateHelperStatus({
+        available: false,
+        status: "unavailable",
+        installed_version: null,
+        error: "Could not reach the update service.",
+      })
+    }
+  }
+
+  useEffect(() => {
+    void loadUpdateHelperStatus()
+  }, [])
+
   useEffect(() => {
     fetch("/health")
       .then((response) => response.json())
@@ -10063,6 +10113,36 @@ function Settings({
                     </span>
                   </div>
                 </div>
+                <div className="settings-list-row">
+                  <div>
+                    <h3>Update service</h3>
+                    <p>
+                      Host-side helper used for controlled FERPEK Lens updates.
+                    </p>
+                  </div>
+
+                  <div className="settings-update-values">
+                    <span>
+                      Version
+                      <strong>
+                        {updateHelperStatus?.installed_version
+                          ? `v${updateHelperStatus.installed_version}`
+                          : "—"}
+                      </strong>
+                    </span>
+
+                    <span>
+                      Status
+                      <strong>
+                        {!updateHelperStatus
+                          ? "Checking..."
+                          : updateHelperStatus.available
+                            ? "Available"
+                            : "Unavailable"}
+                      </strong>
+                    </span>
+                  </div>
+                </div>
               </div>
 
               <div className="settings-update-actions">
@@ -10078,9 +10158,10 @@ function Settings({
                   type="button"
                   className="secondary-button settings-save-button"
                   disabled={updateChecking}
-                  onClick={() =>
+                  onClick={() => {
                     void checkForUpdates()
-                  }
+                    void loadUpdateHelperStatus()
+                  }}
                 >
                   {updateChecking
                     ? "Checking..."

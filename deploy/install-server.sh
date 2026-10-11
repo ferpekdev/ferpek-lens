@@ -253,6 +253,25 @@ curl -fsSL \
 [ -s "$INSTALL_DIR/compose.yml" ] ||
     fail "Downloaded compose.yml is empty."
 
+UPDATER_URL="$REPOSITORY_RAW_BASE/$DEPLOY_REF/deploy/updater/update-helper.py"
+UPDATER_SERVICE_URL="$REPOSITORY_RAW_BASE/$DEPLOY_REF/deploy/updater/ferpek-lens-updater.service"
+
+curl -fsSL \
+    "$UPDATER_URL" \
+    -o "$INSTALL_DIR/update-helper.py"
+
+[ -s "$INSTALL_DIR/update-helper.py" ] ||
+    fail "Downloaded update helper is empty."
+
+chmod 755 "$INSTALL_DIR/update-helper.py"
+
+curl -fsSL \
+    "$UPDATER_SERVICE_URL" \
+    -o /etc/systemd/system/ferpek-lens-updater.service
+
+[ -s /etc/systemd/system/ferpek-lens-updater.service ] ||
+    fail "Downloaded updater service definition is empty."
+
 cat > "$INSTALL_DIR/.env" <<EOF_ENV
 FERPEK_VERSION=$FERPEK_VERSION
 FERPEK_WEB_PORT=$FERPEK_WEB_PORT
@@ -261,6 +280,9 @@ PACK_REGISTRY_URL=https://raw.githubusercontent.com/ferpekdev/ferpek-lens-packs/
 EOF_ENV
 
 chmod 600 "$INSTALL_DIR/.env"
+
+systemctl daemon-reload
+systemctl enable --now ferpek-lens-updater.service
 
 log "[6/7] Pulling FERPEK Lens container images..."
 

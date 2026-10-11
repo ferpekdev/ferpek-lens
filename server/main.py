@@ -27,6 +27,7 @@ import ssl
 import threading
 import time
 import shutil
+import socket
 import tempfile
 import zipfile
 from contextlib import contextmanager
@@ -64,6 +65,11 @@ PACK_REGISTRY_URL = os.environ.get(
 RELEASE_MANIFEST_URL = os.environ.get(
     "RELEASE_MANIFEST_URL",
     "https://raw.githubusercontent.com/ferpekdev/ferpek-lens/main/release.json",
+)
+
+FERPEK_UPDATER_SOCKET = os.environ.get(
+    "FERPEK_UPDATER_SOCKET",
+    "/run/ferpek-lens/updater.sock",
 )
 
 EVENT_RETENTION_DAYS = 14
@@ -2039,6 +2045,111 @@ def require_permission(permission_key: str):
         return user
 
     return dependency
+
+
+def query_update_helper_status():
+    request = json.dumps(
+        {"action": "status"}
+    ).encode("utf-8") + b"\n"
+
+    try:
+        with socket.socket(
+            socket.AF_UNIX,
+            socket.SOCK_STREAM,
+        ) as client:
+            client.settimeout(2.0)
+            client.connect(
+                FERPEK_UPDATER_SOCKET
+            )
+            client.sendall(request)
+
+            response = client.recv(4096)
+
+    except (
+        OSError,
+        TimeoutError,
+    ) as exc:
+        raise RuntimeError(
+            f"Update helper unavailable: {exc}"
+        ) from exc
+
+    if not response:
+        raise RuntimeError(
+            "Update helper returned an empty response."
+        )
+
+    try:
+        payload = json.loads(
+            response.decode("utf-8")
+        )
+    except (
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise RuntimeError(
+            "Update helper returned an invalid response."
+        ) from exc
+
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            "Update helper response must be an object."
+        )
+
+    if payload.get("ok") is not True:
+        error = payload.get("error")
+
+        raise RuntimeError(
+            str(error)
+            if error
+            else "Update helper request failed."
+        )
+
+    result = payload.get("result")
+
+    if not isinstance(result, dict):
+        raise RuntimeError(
+            "Update helper returned an invalid result."
+        )
+
+    if result.get("service") != "ferpek-lens-updater":
+        raise RuntimeError(
+            "Unexpected update helper service."
+        )
+
+    return result
+
+
+@app.get(
+    "/api/v1/updates/helper-status",
+    dependencies=[
+        Depends(
+            require_permission("settings.view")
+        )
+    ],
+)
+def get_update_helper_status():
+    try:
+        result = query_update_helper_status()
+
+    except RuntimeError as exc:
+        return {
+            "available": False,
+            "status": "unavailable",
+            "installed_version": None,
+            "error": str(exc),
+        }
+
+    return {
+        "available": True,
+        "status": result.get(
+            "status",
+            "unknown",
+        ),
+        "installed_version": result.get(
+            "installed_version"
+        ),
+        "error": None,
+    }
 
 
 @app.get(
