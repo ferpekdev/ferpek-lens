@@ -9644,6 +9644,23 @@ function Settings({
       error: string | null
     } | null>(null)
 
+  const [lensUpdateStarting, setLensUpdateStarting] =
+    useState(false)
+
+  const [lensUpdateMessage, setLensUpdateMessage] =
+    useState("")
+
+  const [lensUpdateStatus, setLensUpdateStatus] =
+    useState<{
+      operation_id: string | null
+      status: string
+      target_version: string | null
+      started_at: number | null
+      finished_at: number | null
+      result: unknown
+      error: string | null
+    } | null>(null)
+
   async function loadUpdateHelperStatus() {
     try {
       const response = await fetch(
@@ -9682,9 +9699,128 @@ function Settings({
     }
   }
 
+  async function loadLensUpdateStatus(
+    silent = false,
+  ) {
+    try {
+      const response = await fetch(
+        "/api/v1/updates/status",
+      )
+
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status}`,
+        )
+      }
+
+      const data = await response.json()
+
+      setLensUpdateStatus({
+        operation_id:
+          data.operation_id
+            ? String(data.operation_id)
+            : null,
+        status: String(
+          data.status ?? "unknown",
+        ),
+        target_version:
+          data.target_version
+            ? String(data.target_version)
+            : null,
+        started_at:
+          typeof data.started_at === "number"
+            ? data.started_at
+            : null,
+        finished_at:
+          typeof data.finished_at === "number"
+            ? data.finished_at
+            : null,
+        result: data.result ?? null,
+        error:
+          data.error
+            ? String(data.error)
+            : null,
+      })
+    } catch (error) {
+      if (!silent) {
+        console.error(
+          "Could not load Lens update status:",
+          error,
+        )
+      }
+    }
+  }
+
+
   useEffect(() => {
     void loadUpdateHelperStatus()
+    void loadLensUpdateStatus()
   }, [])
+
+
+  useEffect(() => {
+    const status = lensUpdateStatus?.status
+
+    if (
+      status !== "started" &&
+      status !== "starting" &&
+      status !== "running"
+    ) {
+      return
+    }
+
+    const interval = window.setInterval(
+      () => {
+        void loadLensUpdateStatus(true)
+      },
+      2000,
+    )
+
+    return () => {
+      window.clearInterval(interval)
+    }
+  }, [lensUpdateStatus?.status])
+
+
+  useEffect(() => {
+    if (lensUpdateStatus?.status === "success") {
+      const targetVersion =
+        lensUpdateStatus.target_version
+
+      setLensUpdateMessage(
+        targetVersion
+          ? `FERPEK Lens was updated to v${targetVersion}.`
+          : "FERPEK Lens update completed successfully.",
+      )
+
+      setUpdateError("")
+
+      void checkForUpdates()
+      void loadUpdateHelperStatus()
+
+      fetch("/health")
+        .then((response) => response.json())
+        .then((data) => {
+          if (data?.version) {
+            setCurrentVersion(
+              String(data.version),
+            )
+          }
+        })
+        .catch(() => {
+          // The server may still be reconnecting.
+        })
+    }
+
+    if (lensUpdateStatus?.status === "failed") {
+      setLensUpdateMessage("")
+
+      setUpdateError(
+        lensUpdateStatus.error ||
+          "FERPEK Lens update failed.",
+      )
+    }
+  }, [lensUpdateStatus?.status])
 
   useEffect(() => {
     fetch("/health")
@@ -9772,6 +9908,97 @@ function Settings({
 
     void loadRetentionSettings()
   }, [])
+
+  async function startLensUpdate() {
+    if (
+      !hasPermission(
+        currentUser,
+        'settings.manage',
+      )
+    ) {
+      return
+    }
+
+    const targetVersion =
+      updateResult?.lens.latest_version
+
+    if (
+      !targetVersion ||
+      updateResult?.lens.status !==
+        "update_available" ||
+      !updateHelperStatus?.available
+    ) {
+      return
+    }
+
+    setLensUpdateStarting(true)
+    setLensUpdateMessage("")
+    setUpdateError("")
+
+    try {
+      const response = await fetch(
+        "/api/v1/updates/start",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type":
+              "application/json",
+          },
+          body: JSON.stringify({
+            version: targetVersion,
+          }),
+        },
+      )
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(
+          data?.detail
+            ? String(data.detail)
+            : `HTTP ${response.status}`,
+        )
+      }
+
+      setLensUpdateStatus({
+        operation_id:
+          data.operation_id
+            ? String(data.operation_id)
+            : null,
+        status: String(
+          data.status ?? "started",
+        ),
+        target_version:
+          data.target_version
+            ? String(data.target_version)
+            : targetVersion,
+        started_at: null,
+        finished_at: null,
+        result: null,
+        error: null,
+      })
+
+      setLensUpdateMessage(
+        `Updating FERPEK Lens to v${targetVersion}...`,
+      )
+
+      void loadLensUpdateStatus(true)
+    } catch (error) {
+      console.error(
+        "Could not start Lens update:",
+        error,
+      )
+
+      setUpdateError(
+        error instanceof Error
+          ? error.message
+          : "Could not start FERPEK Lens update.",
+      )
+    } finally {
+      setLensUpdateStarting(false)
+    }
+  }
+
 
   async function checkForUpdates() {
     if (!hasPermission(currentUser, 'settings.view')) {
@@ -10147,6 +10374,12 @@ function Settings({
 
               <div className="settings-update-actions">
                 <div>
+                  {lensUpdateMessage && (
+                    <p className="save-message">
+                      {lensUpdateMessage}
+                    </p>
+                  )}
+
                   {updateError && (
                     <p className="save-error">
                       {updateError}
@@ -10154,19 +10387,65 @@ function Settings({
                   )}
                 </div>
 
-                <button
-                  type="button"
-                  className="secondary-button settings-save-button"
-                  disabled={updateChecking}
-                  onClick={() => {
-                    void checkForUpdates()
-                    void loadUpdateHelperStatus()
-                  }}
-                >
-                  {updateChecking
-                    ? "Checking..."
-                    : "Check for updates"}
-                </button>
+                <div className="settings-update-buttons">
+                  {hasPermission(
+                    currentUser,
+                    'settings.manage',
+                  ) &&
+                    updateResult?.lens.status ===
+                      "update_available" &&
+                    updateHelperStatus?.available && (
+                      <button
+                        type="button"
+                        className="primary-button settings-save-button"
+                        disabled={
+                          lensUpdateStarting ||
+                          lensUpdateStatus?.status ===
+                            "started" ||
+                          lensUpdateStatus?.status ===
+                            "starting" ||
+                          lensUpdateStatus?.status ===
+                            "running"
+                        }
+                        onClick={() =>
+                          void startLensUpdate()
+                        }
+                      >
+                        {lensUpdateStarting ||
+                        lensUpdateStatus?.status ===
+                          "started" ||
+                        lensUpdateStatus?.status ===
+                          "starting" ||
+                        lensUpdateStatus?.status ===
+                          "running"
+                          ? "Updating..."
+                          : "Update"}
+                      </button>
+                    )}
+
+                  <button
+                    type="button"
+                    className="secondary-button settings-save-button"
+                    disabled={
+                      updateChecking ||
+                      lensUpdateStarting ||
+                      lensUpdateStatus?.status ===
+                        "started" ||
+                      lensUpdateStatus?.status ===
+                        "starting" ||
+                      lensUpdateStatus?.status ===
+                        "running"
+                    }
+                    onClick={() => {
+                      void checkForUpdates()
+                      void loadUpdateHelperStatus()
+                    }}
+                  >
+                    {updateChecking
+                      ? "Checking..."
+                      : "Check for updates"}
+                  </button>
+                </div>
               </div>
             </div>
           )}
