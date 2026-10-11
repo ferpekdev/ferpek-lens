@@ -2283,6 +2283,9 @@ def recover_lens_update():
         "installed_version": result.get(
             "installed_version"
         ),
+        "recovery_action": result.get(
+            "recovery_action"
+        ),
         "health": result.get(
             "health"
         ),
