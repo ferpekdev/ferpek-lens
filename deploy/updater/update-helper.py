@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import sys
 import socket
 import subprocess
 import tempfile
@@ -911,6 +912,71 @@ def prune_update_backups(
     return removed
 
 
+def update_housekeeping(
+    state: dict,
+) -> None:
+    recovery = state.get("recovery")
+
+    if not isinstance(recovery, dict):
+        recovery = {}
+
+    status = state.get("status")
+
+    staging_dir_value = recovery.get(
+        "staging_dir"
+    )
+
+    backup_dir_value = recovery.get(
+        "backup_dir"
+    )
+
+    recovery_pending = status in {
+        "interrupted",
+        "recovery_required",
+    }
+
+    if (
+        not recovery_pending
+        and isinstance(staging_dir_value, str)
+        and staging_dir_value
+    ):
+        cleanup_staging_directory(
+            Path(staging_dir_value)
+        )
+
+    protected_paths = ()
+
+    if (
+        recovery_pending
+        and isinstance(backup_dir_value, str)
+        and backup_dir_value
+    ):
+        protected_paths = (
+            Path(backup_dir_value),
+        )
+
+    prune_update_backups(
+        keep=5,
+        protected_paths=protected_paths,
+    )
+
+
+def run_update_housekeeping(
+    state: dict,
+) -> None:
+    try:
+        update_housekeeping(
+            state
+        )
+    except Exception as exc:
+        print(
+            "FERPEK updater housekeeping warning: "
+            f"{exc}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
 def apply_staged_deployment(
     staging_dir: Path,
 ) -> None:
@@ -1412,7 +1478,9 @@ def run_update_job(
             version
         )
 
-        set_update_state({
+        current_state = read_update_state() or {}
+
+        success_state = {
             "operation_id": operation_id,
             "status": "success",
             "target_version": version,
@@ -1420,7 +1488,22 @@ def run_update_job(
             "finished_at": int(time.time()),
             "result": result,
             "error": None,
-        })
+        }
+
+        recovery = current_state.get(
+            "recovery"
+        )
+
+        if recovery is not None:
+            success_state["recovery"] = recovery
+
+        set_update_state(
+            success_state
+        )
+
+        run_update_housekeeping(
+            success_state
+        )
 
     except UpdateTransactionError as exc:
         current_state = read_update_state() or {}
@@ -1457,6 +1540,10 @@ def run_update_job(
             failed_state
         )
 
+        run_update_housekeeping(
+            failed_state
+        )
+
     except Exception as exc:
         current_state = read_update_state() or {}
 
@@ -1478,6 +1565,10 @@ def run_update_job(
             failed_state["recovery"] = recovery
 
         set_update_state(
+            failed_state
+        )
+
+        run_update_housekeeping(
             failed_state
         )
 
@@ -1692,6 +1783,10 @@ def recover_update() -> dict:
     })
 
     set_update_state(
+        recovered_state
+    )
+
+    run_update_housekeeping(
         recovered_state
     )
 
