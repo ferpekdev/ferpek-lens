@@ -161,12 +161,176 @@ def fetch_release_compose(
     return metadata, data
 
 
+def fetch_release_text_file(
+    version: str,
+    relative_path: str,
+    *,
+    description: str,
+    required_markers: tuple[str, ...],
+) -> tuple[dict, bytes]:
+    parse_version(version)
+
+    url = (
+        f"{REPOSITORY_RAW_BASE}/"
+        f"v{version}/{relative_path}"
+    )
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "FERPEK-Lens-Updater",
+            "Accept": "text/plain",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=10,
+        ) as response:
+            content_length = response.headers.get(
+                "Content-Length"
+            )
+
+            if content_length is not None:
+                try:
+                    size = int(content_length)
+                except ValueError:
+                    size = None
+
+                if (
+                    size is not None
+                    and size > MAX_RELEASE_FILE_SIZE
+                ):
+                    raise ValueError(
+                        f"{description} is too large."
+                    )
+
+            data = response.read(
+                MAX_RELEASE_FILE_SIZE + 1
+            )
+
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise ValueError(
+                f"{description} was not found "
+                f"for FERPEK Lens v{version}."
+            ) from exc
+
+        raise ValueError(
+            f"Could not fetch {description} "
+            f"for FERPEK Lens v{version}: "
+            f"HTTP {exc.code}."
+        ) from exc
+
+    except urllib.error.URLError as exc:
+        raise ValueError(
+            "Could not reach the FERPEK release "
+            f"repository while fetching {description}: "
+            f"{exc.reason}"
+        ) from exc
+
+    if len(data) > MAX_RELEASE_FILE_SIZE:
+        raise ValueError(
+            f"{description} is too large."
+        )
+
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            f"{description} is not valid UTF-8."
+        ) from exc
+
+    missing = [
+        marker
+        for marker in required_markers
+        if marker not in text
+    ]
+
+    if missing:
+        raise ValueError(
+            f"{description} is not a valid "
+            "FERPEK Lens release artifact."
+        )
+
+    metadata = {
+        "version": version,
+        "url": url,
+        "validated": True,
+    }
+
+    return metadata, data
+
+
+def fetch_release_update_helper(
+    version: str,
+) -> tuple[dict, bytes]:
+    metadata, data = fetch_release_text_file(
+        version,
+        "deploy/updater/update-helper.py",
+        description="FERPEK update helper",
+        required_markers=(
+            "#!/usr/bin/env python3",
+            "ferpek-lens-updater",
+            "def main()",
+        ),
+    )
+
+    try:
+        source = data.decode("utf-8")
+        compile(
+            source,
+            "update-helper.py",
+            "exec",
+        )
+    except SyntaxError as exc:
+        raise ValueError(
+            "FERPEK update helper contains invalid "
+            "Python syntax."
+        ) from exc
+
+    return metadata, data
+
+
+def fetch_release_updater_service(
+    version: str,
+) -> tuple[dict, bytes]:
+    return fetch_release_text_file(
+        version,
+        "deploy/updater/ferpek-lens-updater.service",
+        description="FERPEK updater service",
+        required_markers=(
+            "[Unit]",
+            "[Service]",
+            "ExecStart=/usr/bin/python3",
+            "FERPEK_UPDATER_SOCKET=",
+        ),
+    )
+
+
 def validate_release(version: str) -> dict:
-    metadata, _ = fetch_release_compose(
+    compose_metadata, _ = fetch_release_compose(
         version
     )
 
-    return metadata
+    helper_metadata, _ = fetch_release_update_helper(
+        version
+    )
+
+    service_metadata, _ = fetch_release_updater_service(
+        version
+    )
+
+    return {
+        "version": version,
+        "compose_url": compose_metadata["compose_url"],
+        "compose": compose_metadata,
+        "update_helper": helper_metadata,
+        "updater_service": service_metadata,
+        "validated": True,
+    }
+
 
 def prepare_update_staging(version: str) -> dict:
     parse_version(version)
