@@ -1779,11 +1779,13 @@ def handle_request(raw: bytes) -> bytes:
                 "steps": [
                     "validate_release",
                     "prepare_backup",
-                    "enter_maintenance",
-                    "pull_images",
+                    "prepare_staging",
                     "apply_deployment",
+                    "reload_systemd",
+                    "pull_images",
+                    "start_services",
                     "health_check",
-                    "leave_maintenance",
+                    "verify_version",
                 ],
             },
         )
