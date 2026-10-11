@@ -26,6 +26,13 @@ INSTALL_DIR = Path(
     )
 )
 
+UPDATER_SERVICE_FILE = Path(
+    os.environ.get(
+        "FERPEK_UPDATER_SERVICE_FILE",
+        "/etc/systemd/system/ferpek-lens-updater.service",
+    )
+)
+
 MAX_REQUEST_SIZE = 4096
 MAX_RELEASE_FILE_SIZE = 512 * 1024
 
@@ -736,31 +743,65 @@ def restore_deployment_backup(
 
     backup_env = backup_dir / ".env"
     backup_compose = backup_dir / "compose.yml"
+    backup_helper = backup_dir / "update-helper.py"
+    backup_service = (
+        backup_dir
+        / "ferpek-lens-updater.service"
+    )
 
     replace_file_atomically(
         backup_env,
         INSTALL_DIR / ".env",
+        mode=0o600,
     )
 
     replace_file_atomically(
         backup_compose,
         INSTALL_DIR / "compose.yml",
+        mode=0o600,
+    )
+
+    replace_file_atomically(
+        backup_helper,
+        INSTALL_DIR / "update-helper.py",
+        mode=0o755,
+    )
+
+    replace_file_atomically(
+        backup_service,
+        UPDATER_SERVICE_FILE,
+        mode=0o644,
     )
 
 
 def prepare_backup() -> dict:
     env_file = INSTALL_DIR / ".env"
     compose_file = INSTALL_DIR / "compose.yml"
+    helper_file = INSTALL_DIR / "update-helper.py"
+    service_file = UPDATER_SERVICE_FILE
 
-    if not env_file.is_file():
-        raise ValueError(
-            "FERPEK .env file was not found."
-        )
+    required_files = (
+        (
+            env_file,
+            "FERPEK .env file was not found.",
+        ),
+        (
+            compose_file,
+            "FERPEK compose.yml file was not found.",
+        ),
+        (
+            helper_file,
+            "FERPEK update helper was not found.",
+        ),
+        (
+            service_file,
+            "FERPEK updater service file was not found.",
+        ),
+    )
 
-    if not compose_file.is_file():
-        raise ValueError(
-            "FERPEK compose.yml file was not found."
-        )
+    for path, error in required_files:
+        if not path.is_file():
+            raise ValueError(error)
 
     timestamp = time.strftime(
         "%Y%m%d-%H%M%S",
@@ -787,19 +828,31 @@ def prepare_backup() -> dict:
         mode=0o700,
     )
 
-    env_backup = backup_dir / ".env"
-    compose_backup = backup_dir / "compose.yml"
-    metadata_file = backup_dir / "metadata.json"
-
-    env_backup.write_bytes(
-        env_file.read_bytes()
+    backup_files = (
+        (
+            env_file,
+            backup_dir / ".env",
+        ),
+        (
+            compose_file,
+            backup_dir / "compose.yml",
+        ),
+        (
+            helper_file,
+            backup_dir / "update-helper.py",
+        ),
+        (
+            service_file,
+            backup_dir
+            / "ferpek-lens-updater.service",
+        ),
     )
-    env_backup.chmod(0o600)
 
-    compose_backup.write_bytes(
-        compose_file.read_bytes()
-    )
-    compose_backup.chmod(0o600)
+    for source, destination in backup_files:
+        destination.write_bytes(
+            source.read_bytes()
+        )
+        destination.chmod(0o600)
 
     installed_version = read_installed_version()
 
@@ -807,11 +860,18 @@ def prepare_backup() -> dict:
         "created_at": int(time.time()),
         "installed_version": installed_version,
         "install_dir": str(INSTALL_DIR),
+        "updater_service_file": str(
+            UPDATER_SERVICE_FILE
+        ),
         "files": [
             ".env",
             "compose.yml",
+            "update-helper.py",
+            "ferpek-lens-updater.service",
         ],
     }
+
+    metadata_file = backup_dir / "metadata.json"
 
     metadata_file.write_text(
         json.dumps(
@@ -828,6 +888,8 @@ def prepare_backup() -> dict:
         "files": [
             ".env",
             "compose.yml",
+            "update-helper.py",
+            "ferpek-lens-updater.service",
             "metadata.json",
         ],
     }
