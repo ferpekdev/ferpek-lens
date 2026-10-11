@@ -3,6 +3,7 @@
 import json
 import os
 import socket
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -142,6 +143,120 @@ def validate_release(version: str) -> dict:
         "version": version,
         "compose_url": url,
         "validated": True,
+    }
+
+
+def prepare_update_staging(version: str) -> dict:
+    parse_version(version)
+
+    release = validate_release(version)
+
+    current_env = INSTALL_DIR / ".env"
+
+    if not current_env.is_file():
+        raise ValueError(
+            "FERPEK .env file was not found."
+        )
+
+    staging_root = INSTALL_DIR / ".update-staging"
+    staging_root.mkdir(
+        parents=True,
+        exist_ok=True,
+        mode=0o700,
+    )
+    staging_root.chmod(0o700)
+
+    staging_dir = Path(
+        tempfile.mkdtemp(
+            prefix=f"v{version}-",
+            dir=staging_root,
+        )
+    )
+    staging_dir.chmod(0o700)
+
+    staged_compose = staging_dir / "compose.yml"
+    staged_env = staging_dir / ".env"
+
+    request = urllib.request.Request(
+        release["compose_url"],
+        headers={
+            "User-Agent": "FERPEK-Lens-Updater",
+            "Accept": "text/plain",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=10,
+        ) as response:
+            compose_data = response.read(
+                MAX_RELEASE_FILE_SIZE + 1
+            )
+    except urllib.error.HTTPError as exc:
+        raise ValueError(
+            f"Could not download FERPEK Lens v{version}: "
+            f"HTTP {exc.code}."
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise ValueError(
+            "Could not reach the FERPEK release repository: "
+            f"{exc.reason}"
+        ) from exc
+
+    if len(compose_data) > MAX_RELEASE_FILE_SIZE:
+        raise ValueError(
+            "Release deployment file is too large."
+        )
+
+    try:
+        compose_data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            "Release deployment file is not valid UTF-8."
+        ) from exc
+
+    staged_compose.write_bytes(
+        compose_data
+    )
+    staged_compose.chmod(0o600)
+
+    current_lines = current_env.read_text(
+        encoding="utf-8"
+    ).splitlines()
+
+    output_lines = []
+    version_replaced = False
+
+    for line in current_lines:
+        if (
+            not version_replaced
+            and line.startswith("FERPEK_VERSION=")
+        ):
+            output_lines.append(
+                f"FERPEK_VERSION={version}"
+            )
+            version_replaced = True
+        else:
+            output_lines.append(line)
+
+    if not version_replaced:
+        output_lines.insert(
+            0,
+            f"FERPEK_VERSION={version}",
+        )
+
+    staged_env.write_text(
+        "\n".join(output_lines) + "\n",
+        encoding="utf-8",
+    )
+    staged_env.chmod(0o600)
+
+    return {
+        "target_version": version,
+        "staging_dir": str(staging_dir),
+        "compose_file": str(staged_compose),
+        "env_file": str(staged_env),
     }
 
 
