@@ -335,7 +335,15 @@ def validate_release(version: str) -> dict:
 def prepare_update_staging(version: str) -> dict:
     parse_version(version)
 
-    release, compose_data = fetch_release_compose(
+    _, compose_data = fetch_release_compose(
+        version
+    )
+
+    _, helper_data = fetch_release_update_helper(
+        version
+    )
+
+    _, service_data = fetch_release_updater_service(
         version
     )
 
@@ -364,11 +372,36 @@ def prepare_update_staging(version: str) -> dict:
 
     staged_compose = staging_dir / "compose.yml"
     staged_env = staging_dir / ".env"
+    staged_helper = staging_dir / "update-helper.py"
+    staged_service = (
+        staging_dir
+        / "ferpek-lens-updater.service"
+    )
 
     staged_compose.write_bytes(
         compose_data
     )
     staged_compose.chmod(0o600)
+
+    staged_helper.write_bytes(
+        helper_data
+    )
+    staged_helper.chmod(0o755)
+
+    service_text = service_data.decode(
+        "utf-8"
+    )
+
+    rendered_service = service_text.replace(
+        "/opt/ferpek-lens-server",
+        str(INSTALL_DIR),
+    )
+
+    staged_service.write_text(
+        rendered_service,
+        encoding="utf-8",
+    )
+    staged_service.chmod(0o644)
 
     current_lines = current_env.read_text(
         encoding="utf-8"
@@ -406,6 +439,8 @@ def prepare_update_staging(version: str) -> dict:
         "staging_dir": str(staging_dir),
         "compose_file": str(staged_compose),
         "env_file": str(staged_env),
+        "update_helper_file": str(staged_helper),
+        "updater_service_file": str(staged_service),
     }
 
 
