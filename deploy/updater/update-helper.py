@@ -3,6 +3,7 @@
 import json
 import os
 import socket
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -141,6 +142,91 @@ def validate_release(version: str) -> dict:
         "version": version,
         "compose_url": url,
         "validated": True,
+    }
+
+
+def prepare_backup() -> dict:
+    env_file = INSTALL_DIR / ".env"
+    compose_file = INSTALL_DIR / "compose.yml"
+
+    if not env_file.is_file():
+        raise ValueError(
+            "FERPEK .env file was not found."
+        )
+
+    if not compose_file.is_file():
+        raise ValueError(
+            "FERPEK compose.yml file was not found."
+        )
+
+    timestamp = time.strftime(
+        "%Y%m%d-%H%M%S",
+        time.localtime(),
+    )
+
+    backup_root = INSTALL_DIR / "backups"
+    backup_root.mkdir(
+        parents=True,
+        exist_ok=True,
+        mode=0o700,
+    )
+    backup_root.chmod(0o700)
+
+    backup_dir = backup_root / timestamp
+
+    if backup_dir.exists():
+        raise ValueError(
+            "Backup directory already exists."
+        )
+
+    backup_dir.mkdir(
+        parents=True,
+        mode=0o700,
+    )
+
+    env_backup = backup_dir / ".env"
+    compose_backup = backup_dir / "compose.yml"
+    metadata_file = backup_dir / "metadata.json"
+
+    env_backup.write_bytes(
+        env_file.read_bytes()
+    )
+    env_backup.chmod(0o600)
+
+    compose_backup.write_bytes(
+        compose_file.read_bytes()
+    )
+    compose_backup.chmod(0o600)
+
+    installed_version = read_installed_version()
+
+    metadata = {
+        "created_at": int(time.time()),
+        "installed_version": installed_version,
+        "install_dir": str(INSTALL_DIR),
+        "files": [
+            ".env",
+            "compose.yml",
+        ],
+    }
+
+    metadata_file.write_text(
+        json.dumps(
+            metadata,
+            indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    metadata_file.chmod(0o600)
+
+    return {
+        "backup_dir": str(backup_dir),
+        "installed_version": installed_version,
+        "files": [
+            ".env",
+            "compose.yml",
+            "metadata.json",
+        ],
     }
 
 
