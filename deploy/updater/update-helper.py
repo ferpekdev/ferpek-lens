@@ -37,6 +37,7 @@ UPDATER_SERVICE_FILE = Path(
 
 MAX_REQUEST_SIZE = 4096
 MAX_RELEASE_FILE_SIZE = 512 * 1024
+UPDATER_PROTOCOL_VERSION = 1
 
 UPDATE_STATE_FILE = INSTALL_DIR / "update-state.json"
 UPDATE_LOCK = threading.Lock()
@@ -1219,12 +1220,20 @@ def perform_update(
             "Downgrades are not supported by update."
         )
 
+    set_update_job_phase(
+        "preparing_backup"
+    )
+
     backup = prepare_backup()
 
     set_update_recovery_context(
         previous_version=installed_version,
         backup_dir=backup["backup_dir"],
         phase="backup_ready",
+    )
+
+    set_update_job_phase(
+        "preparing_staging"
     )
 
     staging = prepare_update_staging(
@@ -1250,16 +1259,37 @@ def perform_update(
 
         deployment_mutation_started = True
 
+        set_update_job_phase(
+            "applying_deployment"
+        )
+
         apply_staged_deployment(
             Path(staging["staging_dir"])
         )
 
         systemd_daemon_reload()
 
+        set_update_job_phase(
+            "pulling_images"
+        )
+
         compose_pull()
+
+        set_update_job_phase(
+            "starting_services"
+        )
+
         compose_up()
 
+        set_update_job_phase(
+            "verifying_health"
+        )
+
         health = check_ferpek_health()
+
+        set_update_job_phase(
+            "verifying_version"
+        )
 
         actual_version = read_installed_version()
 
@@ -1438,6 +1468,30 @@ def set_update_state(
         write_update_state(state)
 
 
+def set_update_job_phase(
+    phase: str,
+) -> None:
+    state = read_update_state()
+
+    if state is None:
+        raise RuntimeError(
+            "Update state is unavailable."
+        )
+
+    if state.get("status") != "running":
+        raise RuntimeError(
+            "Update phase can only be changed "
+            "while an update is running."
+        )
+
+    updated_state = dict(state)
+    updated_state["phase"] = phase
+
+    set_update_state(
+        updated_state
+    )
+
+
 def set_update_recovery_context(
     *,
     previous_version: str,
@@ -1480,6 +1534,7 @@ def run_update_job(
     set_update_state({
         "operation_id": operation_id,
         "status": "running",
+        "phase": "starting",
         "target_version": version,
         "started_at": started_at,
         "finished_at": None,
@@ -1497,6 +1552,7 @@ def run_update_job(
         success_state = {
             "operation_id": operation_id,
             "status": "success",
+            "phase": "complete",
             "target_version": version,
             "started_at": started_at,
             "finished_at": int(time.time()),
@@ -1534,6 +1590,11 @@ def run_update_job(
                 if rollback_failed
                 else "failed"
             ),
+            "phase": (
+                "recovery_required"
+                if rollback_failed
+                else "failed"
+            ),
             "target_version": version,
             "started_at": started_at,
             "finished_at": int(time.time()),
@@ -1564,6 +1625,7 @@ def run_update_job(
         failed_state = {
             "operation_id": operation_id,
             "status": "failed",
+            "phase": "failed",
             "target_version": version,
             "started_at": started_at,
             "finished_at": int(time.time()),
@@ -1623,6 +1685,7 @@ def start_update_job(
         set_update_state({
             "operation_id": operation_id,
             "status": "starting",
+            "phase": "starting",
             "target_version": version,
             "started_at": int(time.time()),
             "finished_at": None,
@@ -1850,6 +1913,7 @@ def make_response(
     error: str | None = None,
 ) -> bytes:
     payload = {
+        "protocol_version": UPDATER_PROTOCOL_VERSION,
         "ok": ok,
         "result": result,
         "error": error,
@@ -1881,6 +1945,7 @@ def handle_request(raw: bytes) -> bytes:
             result={
                 "service": "ferpek-lens-updater",
                 "status": "ready",
+                "protocol_version": UPDATER_PROTOCOL_VERSION,
                 "install_dir": str(INSTALL_DIR),
                 "installed_version": read_installed_version(),
             },
@@ -1942,6 +2007,7 @@ def handle_request(raw: bytes) -> bytes:
         if state is None:
             state = {
                 "status": "idle",
+                "phase": None,
                 "operation_id": None,
                 "target_version": None,
                 "started_at": None,

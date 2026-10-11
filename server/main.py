@@ -72,6 +72,8 @@ FERPEK_UPDATER_SOCKET = os.environ.get(
     "/run/ferpek-lens/updater.sock",
 )
 
+SUPPORTED_UPDATER_PROTOCOL_VERSION = 1
+
 EVENT_RETENTION_DAYS = 14
 RESOLVED_FINDING_RETENTION_DAYS = 90
 RETENTION_CLEANUP_INTERVAL = 3600
@@ -2135,6 +2137,19 @@ def query_update_helper(
             "Update helper response must be an object."
         )
 
+    protocol_version = payload.get(
+        "protocol_version"
+    )
+
+    if (
+        protocol_version
+        != SUPPORTED_UPDATER_PROTOCOL_VERSION
+    ):
+        raise RuntimeError(
+            "Unsupported update helper protocol version: "
+            f"{protocol_version!r}."
+        )
+
     if payload.get("ok") is not True:
         error = payload.get("error")
 
@@ -2182,6 +2197,7 @@ def get_update_helper_status():
             "available": False,
             "status": "unavailable",
             "installed_version": None,
+            "protocol_version": None,
             "error": str(exc),
         }
 
@@ -2193,6 +2209,9 @@ def get_update_helper_status():
         ),
         "installed_version": result.get(
             "installed_version"
+        ),
+        "protocol_version": result.get(
+            "protocol_version"
         ),
         "error": None,
     }
@@ -2238,6 +2257,9 @@ def start_lens_update(
         "status": result.get(
             "status",
             "unknown",
+        ),
+        "phase": result.get(
+            "phase"
         ),
         "target_version": result.get(
             "target_version"
