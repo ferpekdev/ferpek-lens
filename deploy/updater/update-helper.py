@@ -451,6 +451,44 @@ def prepare_update_staging(version: str) -> dict:
     }
 
 
+def systemd_daemon_reload() -> None:
+    try:
+        subprocess.run(
+            [
+                "systemctl",
+                "daemon-reload",
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=30,
+            check=True,
+        )
+
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "systemctl was not found."
+        ) from exc
+
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "systemctl daemon-reload timed out."
+        ) from exc
+
+    except subprocess.CalledProcessError as exc:
+        detail = (
+            exc.stderr.strip()
+            or exc.stdout.strip()
+            or f"exit code {exc.returncode}"
+        )
+
+        raise RuntimeError(
+            "systemctl daemon-reload failed: "
+            f"{detail}"
+        ) from exc
+
+
 def run_compose(
     arguments: tuple[str, ...],
     *,
@@ -960,6 +998,8 @@ def perform_update(
             Path(staging["staging_dir"])
         )
 
+        systemd_daemon_reload()
+
         compose_pull()
         compose_up()
 
@@ -997,6 +1037,8 @@ def perform_update(
                 restore_deployment_backup(
                     Path(backup["backup_dir"])
                 )
+
+                systemd_daemon_reload()
 
                 compose_pull()
                 compose_up()
