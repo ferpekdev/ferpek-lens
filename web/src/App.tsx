@@ -9647,6 +9647,9 @@ function Settings({
   const [lensUpdateStarting, setLensUpdateStarting] =
     useState(false)
 
+  const [lensUpdateRecovering, setLensUpdateRecovering] =
+    useState(false)
+
   const [lensUpdateMessage, setLensUpdateMessage] =
     useState("")
 
@@ -9820,6 +9823,26 @@ function Settings({
           "FERPEK Lens update failed.",
       )
     }
+
+    if (lensUpdateStatus?.status === "interrupted") {
+      setLensUpdateMessage("")
+
+      setUpdateError(
+        lensUpdateStatus.error ||
+          "The previous FERPEK Lens update was interrupted and requires recovery.",
+      )
+    }
+
+    if (lensUpdateStatus?.status === "recovered") {
+      setUpdateError("")
+
+      setLensUpdateMessage(
+        "FERPEK Lens update state was recovered successfully.",
+      )
+
+      void checkForUpdates()
+      void loadUpdateHelperStatus()
+    }
   }, [lensUpdateStatus?.status])
 
   useEffect(() => {
@@ -9908,6 +9931,86 @@ function Settings({
 
     void loadRetentionSettings()
   }, [])
+
+  async function recoverLensUpdate() {
+    if (
+      !hasPermission(
+        currentUser,
+        'settings.manage',
+      ) ||
+      lensUpdateStatus?.status !==
+        "interrupted"
+    ) {
+      return
+    }
+
+    setLensUpdateRecovering(true)
+    setLensUpdateMessage("")
+    setUpdateError("")
+
+    try {
+      const response = await fetch(
+        "/api/v1/updates/recover",
+        {
+          method: "POST",
+        },
+      )
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(
+          data?.detail
+            ? String(data.detail)
+            : `HTTP ${response.status}`,
+        )
+      }
+
+      setLensUpdateStatus(
+        (current) => ({
+          operation_id:
+            current?.operation_id ?? null,
+          status: String(
+            data.status ?? "recovered",
+          ),
+          target_version:
+            current?.target_version ?? null,
+          started_at:
+            current?.started_at ?? null,
+          finished_at:
+            current?.finished_at ?? null,
+          result: {
+            installed_version:
+              data.installed_version ?? null,
+            health:
+              data.health ?? null,
+          },
+          error: null,
+        }),
+      )
+
+      setLensUpdateMessage(
+        "FERPEK Lens update state was recovered successfully.",
+      )
+
+      void loadLensUpdateStatus(true)
+      void loadUpdateHelperStatus()
+    } catch (error) {
+      console.error(
+        "Could not recover Lens update:",
+        error,
+      )
+
+      setUpdateError(
+        error instanceof Error
+          ? error.message
+          : "Could not recover FERPEK Lens update.",
+      )
+    } finally {
+      setLensUpdateRecovering(false)
+    }
+  }
+
 
   async function startLensUpdate() {
     if (
@@ -10392,6 +10495,26 @@ function Settings({
                     currentUser,
                     'settings.manage',
                   ) &&
+                    lensUpdateStatus?.status ===
+                      "interrupted" && (
+                      <button
+                        type="button"
+                        className="primary-button settings-save-button"
+                        disabled={lensUpdateRecovering}
+                        onClick={() =>
+                          void recoverLensUpdate()
+                        }
+                      >
+                        {lensUpdateRecovering
+                          ? "Recovering..."
+                          : "Recover update"}
+                      </button>
+                    )}
+
+                  {hasPermission(
+                    currentUser,
+                    'settings.manage',
+                  ) &&
                     updateResult?.lens.status ===
                       "update_available" &&
                     updateHelperStatus?.available && (
@@ -10429,6 +10552,7 @@ function Settings({
                     disabled={
                       updateChecking ||
                       lensUpdateStarting ||
+                      lensUpdateRecovering ||
                       lensUpdateStatus?.status ===
                         "started" ||
                       lensUpdateStatus?.status ===
