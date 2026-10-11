@@ -625,17 +625,47 @@ function Sidebar({
   }, [accountMenuOpen])
 
   useEffect(() => {
-    fetch("/health")
-      .then((response) => response.json())
-      .then((data) => {
-        if (data?.version) {
-          setPlatformVersion(String(data.version))
-        }
-      })
-      .catch(() => {
-        setPlatformVersion("unknown")
-      })
+    function loadPlatformVersion() {
+      fetch("/health")
+        .then((response) => response.json())
+        .then((data) => {
+          if (data?.version) {
+            setPlatformVersion(String(data.version))
+          }
+        })
+        .catch(() => {
+          setPlatformVersion("unknown")
+        })
+    }
 
+    function handlePlatformVersionChange(
+      event: Event,
+    ) {
+      const customEvent =
+        event as CustomEvent<string>
+
+      if (customEvent.detail) {
+        setPlatformVersion(
+          String(customEvent.detail),
+        )
+      } else {
+        loadPlatformVersion()
+      }
+    }
+
+    loadPlatformVersion()
+
+    window.addEventListener(
+      "ferpek:version-changed",
+      handlePlatformVersionChange,
+    )
+
+    return () => {
+      window.removeEventListener(
+        "ferpek:version-changed",
+        handlePlatformVersionChange,
+      )
+    }
   }, [])
 
   async function handleLogout() {
@@ -9657,12 +9687,48 @@ function Settings({
     useState<{
       operation_id: string | null
       status: string
+      phase: string | null
       target_version: string | null
       started_at: number | null
       finished_at: number | null
       result: unknown
       error: string | null
     } | null>(null)
+
+  const lensUpdateObservedActiveRef =
+    useRef(false)
+
+  function getLensUpdatePhaseLabel(
+    phase: string | null | undefined,
+  ) {
+    switch (phase) {
+      case "starting":
+        return "Starting update..."
+      case "preparing_backup":
+        return "Preparing backup..."
+      case "preparing_staging":
+        return "Preparing update..."
+      case "applying_deployment":
+        return "Applying deployment..."
+      case "pulling_images":
+        return "Downloading images..."
+      case "starting_services":
+        return "Starting services..."
+      case "verifying_health":
+        return "Verifying services..."
+      case "verifying_version":
+        return "Verifying version..."
+      case "complete":
+        return "Update complete."
+      case "recovery_required":
+        return "Recovery required."
+      case "failed":
+        return "Update failed."
+      default:
+        return null
+    }
+  }
+
 
   async function loadUpdateHelperStatus() {
     try {
@@ -9718,6 +9784,15 @@ function Settings({
 
       const data = await response.json()
 
+      if (
+        data.status === "started" ||
+        data.status === "starting" ||
+        data.status === "running"
+      ) {
+        lensUpdateObservedActiveRef.current =
+          true
+      }
+
       setLensUpdateStatus({
         operation_id:
           data.operation_id
@@ -9726,6 +9801,10 @@ function Settings({
         status: String(
           data.status ?? "unknown",
         ),
+        phase:
+          data.phase
+            ? String(data.phase)
+            : null,
         target_version:
           data.target_version
             ? String(data.target_version)
@@ -9790,11 +9869,18 @@ function Settings({
       const targetVersion =
         lensUpdateStatus.target_version
 
-      setLensUpdateMessage(
-        targetVersion
-          ? `FERPEK Lens was updated to v${targetVersion}.`
-          : "FERPEK Lens update completed successfully.",
-      )
+      if (lensUpdateObservedActiveRef.current) {
+        setLensUpdateMessage(
+          targetVersion
+            ? `FERPEK Lens was updated to v${targetVersion}.`
+            : "FERPEK Lens update completed successfully.",
+        )
+      } else {
+        setLensUpdateMessage("")
+      }
+
+      lensUpdateObservedActiveRef.current =
+        false
 
       setUpdateError("")
 
@@ -9805,8 +9891,18 @@ function Settings({
         .then((response) => response.json())
         .then((data) => {
           if (data?.version) {
-            setCurrentVersion(
-              String(data.version),
+            const version =
+              String(data.version)
+
+            setCurrentVersion(version)
+
+            window.dispatchEvent(
+              new CustomEvent(
+                "ferpek:version-changed",
+                {
+                  detail: version,
+                },
+              ),
             )
           }
         })
@@ -9830,6 +9926,17 @@ function Settings({
       setUpdateError(
         lensUpdateStatus.error ||
           "The previous FERPEK Lens update was interrupted and requires recovery.",
+      )
+    }
+
+    if (
+      lensUpdateStatus?.status ===
+      "recovery_required"
+    ) {
+      setLensUpdateMessage("")
+
+      setUpdateError(
+        "The FERPEK Lens update could not be rolled back automatically and requires recovery.",
       )
     }
 
@@ -9938,8 +10045,12 @@ function Settings({
         currentUser,
         'settings.manage',
       ) ||
-      lensUpdateStatus?.status !==
-        "interrupted"
+      ![
+        "interrupted",
+        "recovery_required",
+      ].includes(
+        lensUpdateStatus?.status ?? "",
+      )
     ) {
       return
     }
@@ -9973,6 +10084,7 @@ function Settings({
           status: String(
             data.status ?? "recovered",
           ),
+          phase: null,
           target_version:
             current?.target_version ?? null,
           started_at:
@@ -9995,6 +10107,29 @@ function Settings({
 
       void loadLensUpdateStatus(true)
       void loadUpdateHelperStatus()
+
+      fetch("/health")
+        .then((response) => response.json())
+        .then((healthData) => {
+          if (healthData?.version) {
+            const version =
+              String(healthData.version)
+
+            setCurrentVersion(version)
+
+            window.dispatchEvent(
+              new CustomEvent(
+                "ferpek:version-changed",
+                {
+                  detail: version,
+                },
+              ),
+            )
+          }
+        })
+        .catch(() => {
+          // The server may still be reconnecting.
+        })
     } catch (error) {
       console.error(
         "Could not recover Lens update:",
@@ -10063,6 +10198,9 @@ function Settings({
         )
       }
 
+      lensUpdateObservedActiveRef.current =
+        true
+
       setLensUpdateStatus({
         operation_id:
           data.operation_id
@@ -10071,6 +10209,7 @@ function Settings({
         status: String(
           data.status ?? "started",
         ),
+        phase: "starting",
         target_version:
           data.target_version
             ? String(data.target_version)
@@ -10483,6 +10622,23 @@ function Settings({
                     </p>
                   )}
 
+                  {[
+                    "started",
+                    "starting",
+                    "running",
+                  ].includes(
+                    lensUpdateStatus?.status ?? "",
+                  ) &&
+                    getLensUpdatePhaseLabel(
+                      lensUpdateStatus?.phase,
+                    ) && (
+                      <p className="settings-update-phase">
+                        {getLensUpdatePhaseLabel(
+                          lensUpdateStatus?.phase,
+                        )}
+                      </p>
+                    )}
+
                   {updateError && (
                     <p className="save-error">
                       {updateError}
@@ -10495,8 +10651,12 @@ function Settings({
                     currentUser,
                     'settings.manage',
                   ) &&
-                    lensUpdateStatus?.status ===
-                      "interrupted" && (
+                    [
+                      "interrupted",
+                      "recovery_required",
+                    ].includes(
+                      lensUpdateStatus?.status ?? "",
+                    ) && (
                       <button
                         type="button"
                         className="primary-button settings-save-button"

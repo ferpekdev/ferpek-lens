@@ -10918,3 +10918,12 @@ body {
   justify-content: flex-end;
   gap: 8px;
 }
+
+/* Settings update progress */
+
+.settings-update-phase {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 10px;
+  line-height: 1.4;
+}
