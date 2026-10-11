@@ -238,6 +238,79 @@ def prepare_update_staging(version: str) -> dict:
     }
 
 
+def replace_file_atomically(
+    source: Path,
+    destination: Path,
+) -> None:
+    if not source.is_file():
+        raise ValueError(
+            f"Source file was not found: {source}"
+        )
+
+    fd, temp_name = tempfile.mkstemp(
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+        dir=destination.parent,
+    )
+
+    temp_path = Path(temp_name)
+
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(source.read_bytes())
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        temp_path.chmod(0o600)
+
+        os.replace(
+            temp_path,
+            destination,
+        )
+
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def apply_staged_deployment(
+    staging_dir: Path,
+) -> None:
+    staging_dir = Path(staging_dir)
+
+    staged_env = staging_dir / ".env"
+    staged_compose = staging_dir / "compose.yml"
+
+    replace_file_atomically(
+        staged_env,
+        INSTALL_DIR / ".env",
+    )
+
+    replace_file_atomically(
+        staged_compose,
+        INSTALL_DIR / "compose.yml",
+    )
+
+
+def restore_deployment_backup(
+    backup_dir: Path,
+) -> None:
+    backup_dir = Path(backup_dir)
+
+    backup_env = backup_dir / ".env"
+    backup_compose = backup_dir / "compose.yml"
+
+    replace_file_atomically(
+        backup_env,
+        INSTALL_DIR / ".env",
+    )
+
+    replace_file_atomically(
+        backup_compose,
+        INSTALL_DIR / "compose.yml",
+    )
+
+
 def prepare_backup() -> dict:
     env_file = INSTALL_DIR / ".env"
     compose_file = INSTALL_DIR / "compose.yml"
