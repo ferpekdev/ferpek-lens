@@ -333,6 +333,141 @@ def compose_up() -> str:
     return result.stdout
 
 
+def read_env_value(
+    key: str,
+) -> str | None:
+    env_file = INSTALL_DIR / ".env"
+
+    if not env_file.is_file():
+        return None
+
+    for raw_line in env_file.read_text(
+        encoding="utf-8"
+    ).splitlines():
+        line = raw_line.strip()
+
+        if (
+            not line
+            or line.startswith("#")
+            or "=" not in line
+        ):
+            continue
+
+        current_key, value = line.split(
+            "=",
+            1,
+        )
+
+        if current_key.strip() == key:
+            return value.strip()
+
+    return None
+
+
+def read_configured_port(
+    key: str,
+    default: int,
+) -> int:
+    raw = read_env_value(key)
+
+    if raw is None or raw == "":
+        return default
+
+    if not raw.isdigit():
+        raise ValueError(
+            f"{key} must be a numeric port."
+        )
+
+    port = int(raw)
+
+    if port < 1 or port > 65535:
+        raise ValueError(
+            f"{key} must be between 1 and 65535."
+        )
+
+    return port
+
+
+def wait_for_http(
+    url: str,
+    *,
+    timeout: int,
+) -> None:
+    deadline = time.monotonic() + timeout
+    last_error = None
+
+    while time.monotonic() < deadline:
+        try:
+            request = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent":
+                        "FERPEK-Lens-Updater",
+                },
+            )
+
+            with urllib.request.urlopen(
+                request,
+                timeout=3,
+            ) as response:
+                if 200 <= response.status < 400:
+                    return
+
+                last_error = (
+                    f"HTTP {response.status}"
+                )
+
+        except (
+            urllib.error.URLError,
+            TimeoutError,
+            OSError,
+        ) as exc:
+            last_error = str(exc)
+
+        time.sleep(2)
+
+    raise RuntimeError(
+        f"Health check failed for {url}: "
+        f"{last_error or 'timeout'}"
+    )
+
+
+def check_ferpek_health(
+    *,
+    timeout: int = 90,
+) -> dict:
+    server_port = read_configured_port(
+        "FERPEK_PORT",
+        8000,
+    )
+
+    web_port = read_configured_port(
+        "FERPEK_WEB_PORT",
+        5173,
+    )
+
+    wait_for_http(
+        f"http://127.0.0.1:{server_port}/health",
+        timeout=timeout,
+    )
+
+    wait_for_http(
+        f"http://127.0.0.1:{web_port}/",
+        timeout=timeout,
+    )
+
+    return {
+        "server": {
+            "port": server_port,
+            "status": "healthy",
+        },
+        "web": {
+            "port": web_port,
+            "status": "healthy",
+        },
+    }
+
+
 def replace_file_atomically(
     source: Path,
     destination: Path,
