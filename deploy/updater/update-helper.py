@@ -967,6 +967,65 @@ def start_update_job(
     }
 
 
+def recover_update() -> dict:
+    state = read_update_state()
+
+    if state is None:
+        raise RuntimeError(
+            "There is no interrupted update to recover."
+        )
+
+    if state.get("status") != "interrupted":
+        raise RuntimeError(
+            "The current update state does not require recovery."
+        )
+
+    installed_version = read_installed_version()
+
+    if installed_version is None:
+        raise RuntimeError(
+            "Installed FERPEK version could not be determined."
+        )
+
+    try:
+        parse_version(
+            installed_version
+        )
+    except ValueError as exc:
+        raise RuntimeError(
+            "Installed FERPEK version is invalid."
+        ) from exc
+
+    compose_up()
+
+    health = check_ferpek_health()
+
+    recovered_state = dict(state)
+
+    recovered_state.update({
+        "status": "recovered",
+        "finished_at": int(time.time()),
+        "result": {
+            "installed_version":
+                installed_version,
+            "health": health,
+        },
+        "error": None,
+    })
+
+    set_update_state(
+        recovered_state
+    )
+
+    return {
+        "service": "ferpek-lens-updater",
+        "action": "recover_update",
+        "status": "recovered",
+        "installed_version": installed_version,
+        "health": health,
+    }
+
+
 def recover_interrupted_update_state() -> None:
     state = read_update_state()
 
@@ -1110,6 +1169,20 @@ def handle_request(raw: bytes) -> bytes:
                 "action": "update_status",
                 **state,
             },
+        )
+
+    if action == "recover_update":
+        try:
+            result = recover_update()
+        except RuntimeError as exc:
+            return make_response(
+                ok=False,
+                error=str(exc),
+            )
+
+        return make_response(
+            ok=True,
+            result=result,
         )
 
     if action == "plan_update":
