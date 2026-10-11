@@ -1022,6 +1022,54 @@ def handle_request(raw: bytes) -> bytes:
             },
         )
 
+    if action == "start_update":
+        target_version = request.get("version")
+
+        try:
+            job = start_update_job(
+                target_version
+            )
+        except (
+            ValueError,
+            RuntimeError,
+        ) as exc:
+            return make_response(
+                ok=False,
+                error=str(exc),
+            )
+
+        return make_response(
+            ok=True,
+            result={
+                "service": "ferpek-lens-updater",
+                "action": "start_update",
+                **job,
+            },
+        )
+
+    if action == "update_status":
+        state = read_update_state()
+
+        if state is None:
+            state = {
+                "status": "idle",
+                "operation_id": None,
+                "target_version": None,
+                "started_at": None,
+                "finished_at": None,
+                "result": None,
+                "error": None,
+            }
+
+        return make_response(
+            ok=True,
+            result={
+                "service": "ferpek-lens-updater",
+                "action": "update_status",
+                **state,
+            },
+        )
+
     if action == "plan_update":
         target_version = request.get("version")
         installed_version = read_installed_version()
