@@ -1151,6 +1151,13 @@ def perform_update(
         version
     )
 
+    set_update_recovery_context(
+        previous_version=installed_version,
+        backup_dir=backup["backup_dir"],
+        phase="backup_ready",
+        staging_dir=staging["staging_dir"],
+    )
+
     deployment_mutation_started = False
 
     try:
@@ -1158,6 +1165,7 @@ def perform_update(
             previous_version=installed_version,
             backup_dir=backup["backup_dir"],
             phase="mutation_started",
+            staging_dir=staging["staging_dir"],
         )
 
         deployment_mutation_started = True
@@ -1355,6 +1363,7 @@ def set_update_recovery_context(
     previous_version: str,
     backup_dir: str,
     phase: str,
+    staging_dir: str | None = None,
 ) -> None:
     state = read_update_state()
 
@@ -1374,6 +1383,7 @@ def set_update_recovery_context(
         "previous_version": previous_version,
         "backup_dir": backup_dir,
         "phase": phase,
+        "staging_dir": staging_dir,
     }
 
     set_update_state(
