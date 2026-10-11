@@ -5304,67 +5304,69 @@ function Packs({
   const [packViewLoading, setPackViewLoading] = useState(false)
   const [packViewError, setPackViewError] = useState("")
 
+  async function loadPacks() {
+    try {
+      const response = await fetch("/api/v1/packs")
+
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status}`,
+        )
+      }
+
+      const data = await response.json()
+
+      setPacks(
+        Array.isArray(data?.packs)
+          ? data.packs
+          : [],
+      )
+    } catch (error) {
+      console.error(
+        "Could not load packs:",
+        error,
+      )
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function loadRegistryPacks() {
+    setRegistryLoading(true)
+    setRegistryError("")
+
+    try {
+      const response = await fetch(
+        "/api/v1/packs/registry",
+      )
+
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status}`,
+        )
+      }
+
+      const data = await response.json()
+
+      setRegistryPacks(
+        Array.isArray(data?.packs)
+          ? data.packs
+          : [],
+      )
+    } catch (error) {
+      console.error(
+        "Could not load pack registry:",
+        error,
+      )
+      setRegistryError(
+        "Could not reach the official pack registry.",
+      )
+    } finally {
+      setRegistryLoading(false)
+    }
+  }
+
   useEffect(() => {
-    async function loadPacks() {
-      try {
-        const response = await fetch("/api/v1/packs")
-
-        if (!response.ok) {
-          throw new Error(
-            `HTTP ${response.status}`,
-          )
-        }
-
-        const data = await response.json()
-
-        setPacks(
-          Array.isArray(data?.packs)
-            ? data.packs
-            : [],
-        )
-      } catch (error) {
-        console.error(
-          "Could not load packs:",
-          error,
-        )
-      } finally {
-        setLoading(false)
-      }
-    }
-
-    async function loadRegistryPacks() {
-      try {
-        const response = await fetch(
-          "/api/v1/packs/registry",
-        )
-
-        if (!response.ok) {
-          throw new Error(
-            `HTTP ${response.status}`,
-          )
-        }
-
-        const data = await response.json()
-
-        setRegistryPacks(
-          Array.isArray(data?.packs)
-            ? data.packs
-            : [],
-        )
-        setRegistryError("")
-      } catch (error) {
-        console.error(
-          "Could not load pack registry:",
-          error,
-        )
-        setRegistryError(
-          "Could not load the official pack registry.",
-        )
-      } finally {
-        setRegistryLoading(false)
-      }
-    }
-
     void loadPacks()
     void loadRegistryPacks()
   }, [])
@@ -6091,32 +6093,45 @@ function Packs({
           </p>
         </div>
 
-        {hasPermission(
-          currentUser,
-          'packs.manage',
-        ) && (
-          <label
-            className={
-              packInstalling
-                ? "primary-button action-button pack-install-button disabled"
-                : "primary-button action-button pack-install-button"
-            }
+        <div className="pack-row-actions">
+          <button
+            type="button"
+            className="secondary-button action-button"
+            disabled={registryLoading}
+            onClick={() => void loadRegistryPacks()}
           >
-            {packInstalling ? "Installing..." : "Install pack"}
+            {registryLoading
+              ? "Checking..."
+              : "Check for updates"}
+          </button>
 
-            <input
-              type="file"
-              accept=".pack"
-              disabled={packInstalling}
-              onChange={(event) =>
-                void installPackFile(
-                  event.currentTarget.files?.[0] || null,
-                  event.currentTarget,
-                )
+          {hasPermission(
+            currentUser,
+            'packs.manage',
+          ) && (
+            <label
+              className={
+                packInstalling
+                  ? "primary-button action-button pack-install-button disabled"
+                  : "primary-button action-button pack-install-button"
               }
-            />
-          </label>
-        )}
+            >
+              {packInstalling ? "Installing..." : "Install pack"}
+
+              <input
+                type="file"
+                accept=".pack"
+                disabled={packInstalling}
+                onChange={(event) =>
+                  void installPackFile(
+                    event.currentTarget.files?.[0] || null,
+                    event.currentTarget,
+                  )
+                }
+              />
+            </label>
+          )}
+        </div>
       </div>
 
       <div className="pack-tabs">
@@ -6512,7 +6527,7 @@ function Packs({
               <strong>This pack will be removed</strong>
 
               <p>
-                This will permanently remove {deletePack.name}
+                This will permanently remove {deletePack.name}{" "}
                 from this FERPEK Lens instance.
               </p>
 
