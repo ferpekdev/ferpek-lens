@@ -954,6 +954,35 @@ def start_update_job(
     }
 
 
+def recover_interrupted_update_state() -> None:
+    state = read_update_state()
+
+    if state is None:
+        return
+
+    if state.get("status") not in {
+        "starting",
+        "running",
+    }:
+        return
+
+    recovered_state = dict(state)
+
+    recovered_state.update({
+        "status": "interrupted",
+        "finished_at": int(time.time()),
+        "error": (
+            "The update helper restarted while an update "
+            "was in progress. The update state is uncertain "
+            "and automatic continuation was not attempted."
+        ),
+    })
+
+    set_update_state(
+        recovered_state
+    )
+
+
 def make_response(
     *,
     ok: bool,
@@ -1150,6 +1179,8 @@ def handle_request(raw: bytes) -> bytes:
 
 
 def main() -> None:
+    recover_interrupted_update_state()
+
     SOCKET_PATH.parent.mkdir(
         parents=True,
         exist_ok=True,
