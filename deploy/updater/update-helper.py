@@ -911,6 +911,19 @@ def start_update_job(
 ) -> dict:
     parse_version(version)
 
+    existing_state = read_update_state()
+
+    if (
+        existing_state is not None
+        and existing_state.get("status")
+        == "interrupted"
+    ):
+        raise RuntimeError(
+            "The previous update was interrupted "
+            "and requires recovery before another "
+            "update can be started."
+        )
+
     if not UPDATE_LOCK.acquire(
         blocking=False
     ):
