@@ -5,7 +5,9 @@ import os
 import socket
 import subprocess
 import tempfile
+import threading
 import time
+import uuid
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -26,6 +28,10 @@ INSTALL_DIR = Path(
 
 MAX_REQUEST_SIZE = 4096
 MAX_RELEASE_FILE_SIZE = 512 * 1024
+
+UPDATE_STATE_FILE = INSTALL_DIR / "update-state.json"
+UPDATE_LOCK = threading.Lock()
+UPDATE_STATE_LOCK = threading.Lock()
 
 REPOSITORY_RAW_BASE = os.environ.get(
     "FERPEK_REPOSITORY_RAW_BASE",
@@ -771,6 +777,181 @@ def read_installed_version() -> str | None:
         return None
 
     return None
+
+
+def write_update_state(
+    state: dict,
+) -> None:
+    UPDATE_STATE_FILE.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    fd, temp_name = tempfile.mkstemp(
+        prefix=".update-state.",
+        suffix=".tmp",
+        dir=UPDATE_STATE_FILE.parent,
+    )
+
+    temp_path = Path(temp_name)
+
+    try:
+        with os.fdopen(
+            fd,
+            "w",
+            encoding="utf-8",
+        ) as handle:
+            json.dump(
+                state,
+                handle,
+                indent=2,
+            )
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+
+        temp_path.chmod(0o600)
+
+        os.replace(
+            temp_path,
+            UPDATE_STATE_FILE,
+        )
+
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
+
+
+def read_update_state() -> dict | None:
+    with UPDATE_STATE_LOCK:
+        if not UPDATE_STATE_FILE.is_file():
+            return None
+
+        try:
+            state = json.loads(
+                UPDATE_STATE_FILE.read_text(
+                    encoding="utf-8"
+                )
+            )
+        except (
+            OSError,
+            json.JSONDecodeError,
+        ):
+            return {
+                "status": "unknown",
+                "error":
+                    "Update state could not be read.",
+            }
+
+        if not isinstance(state, dict):
+            return {
+                "status": "unknown",
+                "error":
+                    "Update state is invalid.",
+            }
+
+        return state
+
+
+def set_update_state(
+    state: dict,
+) -> None:
+    with UPDATE_STATE_LOCK:
+        write_update_state(state)
+
+
+def run_update_job(
+    operation_id: str,
+    version: str,
+) -> None:
+    started_at = int(time.time())
+
+    set_update_state({
+        "operation_id": operation_id,
+        "status": "running",
+        "target_version": version,
+        "started_at": started_at,
+        "finished_at": None,
+        "result": None,
+        "error": None,
+    })
+
+    try:
+        result = perform_update(
+            version
+        )
+
+        set_update_state({
+            "operation_id": operation_id,
+            "status": "success",
+            "target_version": version,
+            "started_at": started_at,
+            "finished_at": int(time.time()),
+            "result": result,
+            "error": None,
+        })
+
+    except Exception as exc:
+        set_update_state({
+            "operation_id": operation_id,
+            "status": "failed",
+            "target_version": version,
+            "started_at": started_at,
+            "finished_at": int(time.time()),
+            "result": None,
+            "error": str(exc),
+        })
+
+    finally:
+        UPDATE_LOCK.release()
+
+
+def start_update_job(
+    version: str,
+) -> dict:
+    parse_version(version)
+
+    if not UPDATE_LOCK.acquire(
+        blocking=False
+    ):
+        raise RuntimeError(
+            "An update is already in progress."
+        )
+
+    operation_id = uuid.uuid4().hex
+
+    try:
+        set_update_state({
+            "operation_id": operation_id,
+            "status": "starting",
+            "target_version": version,
+            "started_at": int(time.time()),
+            "finished_at": None,
+            "result": None,
+            "error": None,
+        })
+
+        worker = threading.Thread(
+            target=run_update_job,
+            args=(
+                operation_id,
+                version,
+            ),
+            name="ferpek-lens-update",
+            daemon=True,
+        )
+
+        worker.start()
+
+    except Exception:
+        UPDATE_LOCK.release()
+        raise
+
+    return {
+        "operation_id": operation_id,
+        "status": "started",
+        "target_version": version,
+    }
 
 
 def make_response(
