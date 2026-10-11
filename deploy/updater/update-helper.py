@@ -3,6 +3,8 @@
 import json
 import os
 import socket
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 SOCKET_PATH = Path(
@@ -20,6 +22,126 @@ INSTALL_DIR = Path(
 )
 
 MAX_REQUEST_SIZE = 4096
+MAX_RELEASE_FILE_SIZE = 512 * 1024
+
+REPOSITORY_RAW_BASE = os.environ.get(
+    "FERPEK_REPOSITORY_RAW_BASE",
+    "https://raw.githubusercontent.com/ferpekdev/ferpek-lens",
+)
+
+
+def parse_version(value: object) -> tuple[int, int, int]:
+    if not isinstance(value, str):
+        raise ValueError("Version must be a string.")
+
+    value = value.strip()
+
+    parts = value.split(".")
+
+    if len(parts) != 3:
+        raise ValueError(
+            "Version must use MAJOR.MINOR.PATCH format."
+        )
+
+    if not all(part.isdigit() for part in parts):
+        raise ValueError(
+            "Version must contain numeric components only."
+        )
+
+    return tuple(int(part) for part in parts)
+
+
+def validate_release(version: str) -> dict:
+    parse_version(version)
+
+    url = (
+        f"{REPOSITORY_RAW_BASE}/"
+        f"v{version}/deploy/compose.yml"
+    )
+
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "FERPEK-Lens-Updater",
+            "Accept": "text/plain",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=10,
+        ) as response:
+            content_length = response.headers.get(
+                "Content-Length"
+            )
+
+            if content_length is not None:
+                try:
+                    if int(content_length) > MAX_RELEASE_FILE_SIZE:
+                        raise ValueError(
+                            "Release deployment file is too large."
+                        )
+                except ValueError as exc:
+                    if str(exc) == "Release deployment file is too large.":
+                        raise
+
+            data = response.read(
+                MAX_RELEASE_FILE_SIZE + 1
+            )
+
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise ValueError(
+                f"FERPEK Lens v{version} was not found."
+            ) from exc
+
+        raise ValueError(
+            f"Could not validate FERPEK Lens v{version}: "
+            f"HTTP {exc.code}."
+        ) from exc
+
+    except urllib.error.URLError as exc:
+        raise ValueError(
+            f"Could not reach the FERPEK release repository: "
+            f"{exc.reason}"
+        ) from exc
+
+    if len(data) > MAX_RELEASE_FILE_SIZE:
+        raise ValueError(
+            "Release deployment file is too large."
+        )
+
+    try:
+        compose = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError(
+            "Release deployment file is not valid UTF-8."
+        ) from exc
+
+    required_markers = (
+        "name: ferpek-lens",
+        "ghcr.io/ferpekdev/ferpek-lens-server:",
+        "ghcr.io/ferpekdev/ferpek-lens-web:",
+    )
+
+    missing = [
+        marker
+        for marker in required_markers
+        if marker not in compose
+    ]
+
+    if missing:
+        raise ValueError(
+            "Release deployment file is not a valid "
+            "FERPEK Lens deployment."
+        )
+
+    return {
+        "version": version,
+        "compose_url": url,
+        "validated": True,
+    }
 
 
 def read_installed_version() -> str | None:
@@ -86,6 +208,104 @@ def handle_request(raw: bytes) -> bytes:
                 "status": "ready",
                 "install_dir": str(INSTALL_DIR),
                 "installed_version": read_installed_version(),
+            },
+        )
+
+    if action == "validate_release":
+        target_version = request.get("version")
+
+        try:
+            parse_version(target_version)
+
+            release = validate_release(
+                target_version
+            )
+
+        except ValueError as exc:
+            return make_response(
+                ok=False,
+                error=str(exc),
+            )
+
+        return make_response(
+            ok=True,
+            result={
+                "service": "ferpek-lens-updater",
+                "action": "validate_release",
+                **release,
+            },
+        )
+
+    if action == "plan_update":
+        target_version = request.get("version")
+        installed_version = read_installed_version()
+
+        try:
+            target_parsed = parse_version(
+                target_version
+            )
+        except ValueError as exc:
+            return make_response(
+                ok=False,
+                error=str(exc),
+            )
+
+        if installed_version is None:
+            return make_response(
+                ok=False,
+                error="Installed FERPEK version could not be determined.",
+            )
+
+        try:
+            installed_parsed = parse_version(
+                installed_version
+            )
+        except ValueError:
+            return make_response(
+                ok=False,
+                error="Installed FERPEK version is invalid.",
+            )
+
+        if target_parsed == installed_parsed:
+            return make_response(
+                ok=False,
+                error="Target version is already installed.",
+            )
+
+        if target_parsed < installed_parsed:
+            return make_response(
+                ok=False,
+                error="Downgrades are not supported by update.",
+            )
+
+        try:
+            release = validate_release(
+                target_version
+            )
+        except ValueError as exc:
+            return make_response(
+                ok=False,
+                error=str(exc),
+            )
+
+        return make_response(
+            ok=True,
+            result={
+                "service": "ferpek-lens-updater",
+                "action": "plan_update",
+                "current_version": installed_version,
+                "target_version": target_version,
+                "install_dir": str(INSTALL_DIR),
+                "release": release,
+                "steps": [
+                    "validate_release",
+                    "prepare_backup",
+                    "enter_maintenance",
+                    "pull_images",
+                    "apply_deployment",
+                    "health_check",
+                    "leave_maintenance",
+                ],
             },
         )
 
