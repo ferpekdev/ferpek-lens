@@ -10964,3 +10964,97 @@ body {
 .settings-release-link:hover {
   text-decoration: underline;
 }
+
+/* ---------------------------------------------------------
+   FERPEK Lens global update overlay
+   --------------------------------------------------------- */
+
+.lens-update-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 30px;
+  background: rgba(8, 11, 15, 0.72);
+  backdrop-filter: blur(2px);
+}
+
+.lens-update-overlay-card {
+  position: relative;
+  width: min(500px, 100%);
+  overflow: hidden;
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  padding: 22px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
+}
+
+.lens-update-overlay-copy {
+  min-width: 0;
+  flex: 1;
+}
+
+.lens-update-overlay-copy h2 {
+  margin: 0;
+  color: var(--text-strong);
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.lens-update-overlay-phase {
+  margin: 6px 0 0;
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.lens-update-overlay-note {
+  margin: 7px 0 0;
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.lens-update-overlay-spinner {
+  width: 18px;
+  height: 18px;
+  flex: 0 0 18px;
+  margin-top: 1px;
+  border: 2px solid var(--border);
+  border-top-color: var(--brand);
+  border-radius: 50%;
+  animation: ferpek-update-spin 0.8s linear infinite;
+}
+
+.lens-update-overlay-card::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  width: 36%;
+  height: 3px;
+  background: var(--brand);
+  animation: ferpek-update-progress 1.6s ease-in-out infinite;
+}
+
+@keyframes ferpek-update-progress {
+  0% {
+    transform: translateX(-110%);
+  }
+
+  50% {
+    transform: translateX(115%);
+  }
+
+  100% {
+    transform: translateX(290%);
+  }
+}

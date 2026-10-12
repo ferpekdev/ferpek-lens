@@ -10236,6 +10236,17 @@ function Settings({
       lensUpdateObservedActiveRef.current =
         true
 
+      window.dispatchEvent(
+        new CustomEvent(
+          "ferpek:update-started",
+          {
+            detail: {
+              targetVersion,
+            },
+          },
+        ),
+      )
+
       setLensUpdateStatus({
         operation_id:
           data.operation_id
@@ -11134,6 +11145,238 @@ type ThemePreference =
   | 'dark'
 
 
+type GlobalLensUpdateStatus = {
+  status: string
+  phase: string | null
+  target_version: string | null
+  error: string | null
+}
+
+
+function getGlobalLensUpdatePhaseLabel(
+  phase: string | null | undefined,
+) {
+  switch (phase) {
+    case "starting":
+      return "Starting update..."
+    case "preparing_backup":
+      return "Preparing backup..."
+    case "preparing_staging":
+      return "Preparing update..."
+    case "applying_deployment":
+      return "Applying deployment..."
+    case "pulling_images":
+      return "Downloading images..."
+    case "starting_services":
+      return "Starting services..."
+    case "verifying_health":
+      return "Verifying services..."
+    case "verifying_version":
+      return "Verifying version..."
+    case "complete":
+      return "Update complete."
+    default:
+      return "Updating FERPEK Lens..."
+  }
+}
+
+
+function LensUpdateOverlay() {
+  const [updateStatus, setUpdateStatus] =
+    useState<GlobalLensUpdateStatus | null>(null)
+
+  const observedActiveRef = useRef(false)
+  const reloadScheduledRef = useRef(false)
+
+  const isActive = [
+    "started",
+    "starting",
+    "running",
+  ].includes(updateStatus?.status ?? "")
+
+  const isObservedSuccess =
+    updateStatus?.status === "success" &&
+    observedActiveRef.current
+
+  async function loadUpdateStatus(
+    silent = false,
+  ) {
+    try {
+      const response = await fetch(
+        "/api/v1/updates/status",
+      )
+
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status}`,
+        )
+      }
+
+      const data = await response.json()
+
+      const nextStatus =
+        String(data.status ?? "unknown")
+
+      if (
+        nextStatus === "started" ||
+        nextStatus === "starting" ||
+        nextStatus === "running"
+      ) {
+        observedActiveRef.current = true
+      }
+
+      setUpdateStatus({
+        status: nextStatus,
+        phase:
+          data.phase
+            ? String(data.phase)
+            : null,
+        target_version:
+          data.target_version
+            ? String(data.target_version)
+            : null,
+        error:
+          data.error
+            ? String(data.error)
+            : null,
+      })
+    } catch (error) {
+      if (!silent) {
+        console.error(
+          "Could not load global Lens update status:",
+          error,
+        )
+      }
+    }
+  }
+
+  useEffect(() => {
+    void loadUpdateStatus()
+
+    function handleUpdateStarted(
+      event: Event,
+    ) {
+      const detail = (
+        event as CustomEvent<{
+          targetVersion?: string
+        }>
+      ).detail
+
+      observedActiveRef.current = true
+
+      setUpdateStatus({
+        status: "starting",
+        phase: "starting",
+        target_version:
+          detail?.targetVersion ?? null,
+        error: null,
+      })
+
+      void loadUpdateStatus(true)
+    }
+
+    window.addEventListener(
+      "ferpek:update-started",
+      handleUpdateStarted,
+    )
+
+    return () => {
+      window.removeEventListener(
+        "ferpek:update-started",
+        handleUpdateStarted,
+      )
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!isActive) {
+      return
+    }
+
+    const interval = window.setInterval(
+      () => {
+        void loadUpdateStatus(true)
+      },
+      250,
+    )
+
+    return () => {
+      window.clearInterval(interval)
+    }
+  }, [isActive])
+
+  useEffect(() => {
+    if (
+      updateStatus?.status !== "success" ||
+      !observedActiveRef.current ||
+      reloadScheduledRef.current
+    ) {
+      return
+    }
+
+    reloadScheduledRef.current = true
+
+    const timer = window.setTimeout(
+      () => {
+        window.location.reload()
+      },
+      1500,
+    )
+
+    return () => {
+      window.clearTimeout(timer)
+    }
+  }, [updateStatus?.status])
+
+  if (!isActive && !isObservedSuccess) {
+    return null
+  }
+
+  const targetVersion =
+    updateStatus?.target_version
+
+  return (
+    <div
+      className="lens-update-overlay"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="lens-update-overlay-title"
+    >
+      <div className="lens-update-overlay-card">
+        <span
+          className="lens-update-overlay-spinner"
+          aria-hidden="true"
+        />
+
+        <div className="lens-update-overlay-copy">
+          <h2 id="lens-update-overlay-title">
+            {isObservedSuccess
+              ? "Update complete"
+              : "Updating FERPEK Lens"}
+          </h2>
+
+          <p className="lens-update-overlay-phase">
+            {isObservedSuccess
+              ? targetVersion
+                ? `FERPEK Lens was updated to v${targetVersion}.`
+                : "FERPEK Lens was updated successfully."
+              : getGlobalLensUpdatePhaseLabel(
+                  updateStatus?.phase,
+                )}
+          </p>
+
+          <p className="lens-update-overlay-note">
+            {isObservedSuccess
+              ? "Reloading the application..."
+              : "FERPEK Lens will remain unavailable for some actions while the update is applied."}
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+
 function Layout({
   currentUser,
   onLogout,
@@ -11200,6 +11443,7 @@ function Layout({
   return (
     <div className="app">
       <GlobalTooltip />
+      <LensUpdateOverlay />
       <Sidebar
         currentUser={currentUser}
         onLogout={onLogout}
