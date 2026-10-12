@@ -9,6 +9,7 @@ services:
     environment:
       - DB_PATH=/data/ferpek.db
       - PACK_REGISTRY_URL=${PACK_REGISTRY_URL:-https://raw.githubusercontent.com/ferpekdev/ferpek-lens-packs/main/index.json}
+      - RELEASE_MANIFEST_URL=${RELEASE_MANIFEST_URL:-https://raw.githubusercontent.com/ferpekdev/ferpek-lens/main/release.json}
       - FERPEK_UPDATER_SOCKET=/run/ferpek-lens/updater.sock
     volumes:
       - server_data:/data
