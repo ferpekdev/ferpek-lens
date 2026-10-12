@@ -11368,7 +11368,7 @@ function LensUpdateOverlay() {
           <p className="lens-update-overlay-note">
             {isObservedSuccess
               ? "Reloading the application..."
-              : "FERPEK Lens will remain unavailable for some actions while the update is applied."}
+              : "The update continues on the server even if this browser tab is closed."}
           </p>
         </div>
       </div>

@@ -46,6 +46,7 @@ nav:
       - Pack development: packs/development.md
 
   - Releases:
+      - FERPEK Lens 0.4.6: releases/0.4.6.md
       - FERPEK Lens 0.4.5: releases/0.4.5.md
       - FERPEK Lens 0.4.4: releases/0.4.4.md
       - FERPEK Lens 0.4.3: releases/0.4.3.md
