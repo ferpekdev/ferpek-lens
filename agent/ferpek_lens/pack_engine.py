@@ -8,6 +8,9 @@ from pathlib import Path
 import yaml
 
 
+PACK_ENGINE_VERSION = "0.2.0"
+
+
 class PackEngine:
     def __init__(self, packs_dir, state_file=None):
         self.packs_dir = Path(packs_dir)

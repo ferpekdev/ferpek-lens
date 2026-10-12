@@ -139,6 +139,12 @@ def init_db():
         if not column_exists(conn, "agents", "agent_version"):
             conn.execute("ALTER TABLE agents ADD COLUMN agent_version TEXT")
 
+        if not column_exists(conn, "agents", "pack_engine_version"):
+            conn.execute(
+                "ALTER TABLE agents "
+                "ADD COLUMN pack_engine_version TEXT"
+            )
+
         if not column_exists(conn, "agents", "machine_type"):
             conn.execute("ALTER TABLE agents ADD COLUMN machine_type TEXT")
 
@@ -1231,6 +1237,7 @@ class EnrollRequest(BaseModel):
     os_version: str = ""
     platform: str = ""
     agent_version: str = ""
+    pack_engine_version: str = ""
 
 
 class EnrollResponse(BaseModel):
@@ -1306,6 +1313,7 @@ class AgentMetadata(BaseModel):
     os_version: str = ""
     platform: str = ""
     agent_version: str = ""
+    pack_engine_version: str = ""
     machine_type: str = ""
 
 
@@ -3897,9 +3905,10 @@ def enroll(req: EnrollRequest):
                     os_name,
                     os_version,
                     platform,
-                    agent_version
+                    agent_version,
+                    pack_engine_version
                 )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 req.hostname,
@@ -3910,6 +3919,7 @@ def enroll(req: EnrollRequest):
                 req.os_version,
                 req.platform,
                 req.agent_version,
+                req.pack_engine_version,
             ),
         )
 
@@ -3953,6 +3963,7 @@ def update_agent_metadata(
                 os_version = ?,
                 platform = ?,
                 agent_version = ?,
+                pack_engine_version = ?,
                 machine_type = ?
             WHERE id = ?
             """,
@@ -3961,6 +3972,7 @@ def update_agent_metadata(
                 metadata.os_version,
                 metadata.platform,
                 metadata.agent_version,
+                metadata.pack_engine_version,
                 metadata.machine_type,
                 agent["id"],
             ),
@@ -6908,6 +6920,33 @@ def is_pack_agent_compatible(
 
 
 
+def is_pack_engine_compatible(
+    manifest: dict,
+    pack_engine_version: str,
+) -> bool:
+    compatibility = get_pack_compatibility(
+        manifest
+    )
+
+    requirement = str(
+        compatibility.get(
+            "pack_engine",
+            "",
+        )
+    ).strip()
+
+    if not requirement:
+        return True
+
+    if not pack_engine_version:
+        return False
+
+    return version_matches(
+        pack_engine_version,
+        requirement,
+    )
+
+
 def is_pack_platform_compatible(
     manifest: dict,
     agent_platform: str,
@@ -9442,6 +9481,17 @@ def get_agent_pack_catalog(
         ):
             continue
 
+        if not is_pack_engine_compatible(
+            manifest,
+            str(
+                agent.get(
+                    "pack_engine_version"
+                )
+                or ""
+            ),
+        ):
+            continue
+
         if not is_pack_platform_compatible(
             manifest,
             agent_platform,
@@ -9704,6 +9754,17 @@ def get_agent_packs(agent=Depends(get_agent)):
         if not is_pack_agent_compatible(
             manifest,
             str(agent.get("agent_version") or ""),
+        ):
+            continue
+
+        if not is_pack_engine_compatible(
+            manifest,
+            str(
+                agent.get(
+                    "pack_engine_version"
+                )
+                or ""
+            ),
         ):
             continue
 

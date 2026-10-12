@@ -9,9 +9,21 @@ import queue
 import sqlite3
 
 try:
-    from ferpek_lens.pack_engine import PackEngine
+    from ferpek_lens import pack_engine as pack_engine_module
 except ModuleNotFoundError:
-    from rosetta_lens.pack_engine import PackEngine
+    from rosetta_lens import pack_engine as pack_engine_module
+
+PackEngine = pack_engine_module.PackEngine
+
+# Legacy engines predate explicit engine versioning.
+# Empty means "unknown" and intentionally fails compatibility
+# checks for packs that require a specific Pack Engine version.
+PACK_ENGINE_VERSION = getattr(
+    pack_engine_module,
+    "PACK_ENGINE_VERSION",
+    "",
+)
+
 import socket
 import subprocess
 import sys
@@ -1515,6 +1527,7 @@ def enroll():
             "os_version": os_info["os_version"],
             "platform": os_info["platform"],
             "agent_version": VERSION,
+            "pack_engine_version": PACK_ENGINE_VERSION,
         },
     )
 
@@ -1585,6 +1598,7 @@ def update_metadata(agent_key: str):
             "os_version": os_info["os_version"],
             "platform": os_info["platform"],
             "agent_version": VERSION,
+            "pack_engine_version": PACK_ENGINE_VERSION,
             "machine_type": detect_machine_type(),
         },
         agent_key,

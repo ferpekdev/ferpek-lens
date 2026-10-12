@@ -11,7 +11,10 @@ AGENT_DIR = PROJECT_ROOT / "agent"
 if str(AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(AGENT_DIR))
 
-from ferpek_lens.pack_engine import PackEngine
+from ferpek_lens.pack_engine import (
+    PACK_ENGINE_VERSION,
+    PackEngine,
+)
 
 
 class PackEngineTestCase(unittest.TestCase):
@@ -66,6 +69,12 @@ version: 1.0.0
             "timestamp": timestamp,
             "message": message,
         }
+
+    def test_pack_engine_has_explicit_version(self):
+        self.assertEqual(
+            PACK_ENGINE_VERSION,
+            "0.2.0",
+        )
 
     def test_relevant_event_is_built_from_named_fields(self):
         self.write_pack(
