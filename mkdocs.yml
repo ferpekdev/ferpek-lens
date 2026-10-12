@@ -45,6 +45,9 @@ nav:
       - Overview: packs/overview.md
       - Pack development: packs/development.md
 
+  - Releases:
+      - FERPEK Lens 0.4.3: releases/0.4.3.md
+
   - Troubleshooting:
       - Overview: troubleshooting/index.md
 

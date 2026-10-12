@@ -111,7 +111,7 @@ Check the server health endpoint:
 
 A successful response looks similar to:
 
-    {"status":"ok","version":"0.4.1"}
+    {"status":"ok","version":"0.4.3"}
 
 The exact version may differ from the example above.
 
@@ -159,7 +159,7 @@ The web and server ports must be different and must not already be in use.
 
 A specific FERPEK Lens release can be selected with:
 
-    curl -fsSL https://raw.githubusercontent.com/ferpekdev/ferpek-lens/main/deploy/install-server.sh | sudo sh -s -- --version 0.4.1
+    curl -fsSL https://raw.githubusercontent.com/ferpekdev/ferpek-lens/main/deploy/install-server.sh | sudo sh -s -- --version 0.4.3
 
 When a specific version is selected, FERPEK Lens uses the deployment configuration associated with that release.
 
@@ -167,9 +167,27 @@ When a specific version is selected, FERPEK Lens uses the deployment configurati
 
 The installer refuses to overwrite an existing FERPEK Lens installation.
 
-If FERPEK Lens is already installed, the existing deployment should be managed or upgraded instead of running the installer again.
+If FERPEK Lens is already installed, do not run the normal installer again.
 
-Upgrade and migration workflows are still being developed.
+### Upgrade from 0.4.2 to 0.4.3
+
+FERPEK Lens 0.4.3 introduces the host-side update helper used by the WebUI update workflow.
+
+Because 0.4.2 does not contain this helper, upgrading from 0.4.2 requires a one-time bootstrap:
+
+    curl -fsSL https://raw.githubusercontent.com/ferpekdev/ferpek-lens/2e56a0b/deploy/bootstrap-0.4.3.sh | sudo sh
+
+The bootstrap preserves the existing FERPEK Lens data volume, updates the deployment to 0.4.3 and installs the update helper.
+
+Do not use:
+
+    docker compose down -v
+
+during the upgrade because the `-v` option removes persistent Docker volumes.
+
+After FERPEK Lens 0.4.3 is installed, future compatible Lens updates can be managed from **Settings → Updates**.
+
+See **Releases → FERPEK Lens 0.4.3** for the full 0.4.3 upgrade notes.
 
 ## Development installation
 
