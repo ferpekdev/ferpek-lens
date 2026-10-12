@@ -470,6 +470,233 @@ finding:
             "3 failures from 192.0.2.70.",
         )
 
+    def test_collect_distinct_values_are_available_to_template(self):
+        self.write_pack(
+            r"""
+id: testpack.collect
+name: Collected event
+source_family: test-family
+
+match:
+  regex: 'failure user=(?P<user>\S+) ip=(?P<ip>\S+)'
+
+group_by:
+  - ip
+
+aggregate:
+  window_seconds: 300
+  threshold: 3
+  collect:
+    users:
+      field: user
+      distinct: true
+
+finding:
+  severity: warning
+  title: Repeated failures
+  detail: "{count} failures from {ip} targeting {users_count} users: {users}."
+"""
+        )
+
+        engine = self.make_engine()
+
+        engine.process_event(
+            self.event(
+                "failure user=root ip=192.0.2.80",
+                1000,
+            )
+        )
+        engine.process_event(
+            self.event(
+                "failure user=admin ip=192.0.2.80",
+                1010,
+            )
+        )
+        result = engine.process_event(
+            self.event(
+                "failure user=root ip=192.0.2.80",
+                1020,
+            )
+        )
+
+        self.assertEqual(
+            len(result["findings"]),
+            1,
+        )
+        self.assertEqual(
+            result["findings"][0]["detail"],
+            (
+                "3 failures from 192.0.2.80 "
+                "targeting 2 users: root, admin."
+            ),
+        )
+
+    def test_collect_values_expire_with_window(self):
+        self.write_pack(
+            r"""
+id: testpack.collect_window
+name: Collected window event
+source_family: test-family
+
+match:
+  regex: 'failure user=(?P<user>\S+) ip=(?P<ip>\S+)'
+
+group_by:
+  - ip
+
+aggregate:
+  window_seconds: 60
+  threshold: 2
+  collect:
+    users:
+      field: user
+      distinct: true
+
+finding:
+  severity: warning
+  title: Repeated failures
+  detail: "{count} failures targeting {users_count} users: {users}."
+"""
+        )
+
+        engine = self.make_engine()
+
+        engine.process_event(
+            self.event(
+                "failure user=olduser ip=192.0.2.81",
+                1000,
+            )
+        )
+
+        engine.process_event(
+            self.event(
+                "failure user=root ip=192.0.2.81",
+                1061,
+            )
+        )
+
+        result = engine.process_event(
+            self.event(
+                "failure user=admin ip=192.0.2.81",
+                1070,
+            )
+        )
+
+        self.assertEqual(
+            len(result["findings"]),
+            1,
+        )
+        self.assertEqual(
+            result["findings"][0]["detail"],
+            (
+                "2 failures targeting 2 users: "
+                "root, admin."
+            ),
+        )
+
+    def test_collect_state_persists_across_restart(self):
+        self.write_pack(
+            r"""
+id: testpack.collect_persisted
+name: Persisted collected event
+source_family: test-family
+
+match:
+  regex: 'failure user=(?P<user>\S+) ip=(?P<ip>\S+)'
+
+group_by:
+  - ip
+
+aggregate:
+  window_seconds: 300
+  threshold: 3
+  collect:
+    users:
+      field: user
+      distinct: true
+
+finding:
+  severity: warning
+  title: Repeated failures
+  detail: "{count} failures targeting {users_count} users: {users}."
+"""
+        )
+
+        now = int(time.time())
+
+        first_engine = self.make_engine(
+            state_file=self.state_file,
+        )
+
+        first_engine.process_event(
+            self.event(
+                "failure user=root ip=192.0.2.82",
+                now - 20,
+            )
+        )
+        first_engine.process_event(
+            self.event(
+                "failure user=admin ip=192.0.2.82",
+                now - 10,
+            )
+        )
+
+        first_engine.save_state(force=True)
+
+        second_engine = self.make_engine(
+            state_file=self.state_file,
+        )
+        second_engine.load_state()
+
+        result = second_engine.process_event(
+            self.event(
+                "failure user=postgres ip=192.0.2.82",
+                now,
+            )
+        )
+
+        self.assertEqual(
+            len(result["findings"]),
+            1,
+        )
+        self.assertEqual(
+            result["findings"][0]["detail"],
+            (
+                "3 failures targeting 3 users: "
+                "root, admin, postgres."
+            ),
+        )
+
+    def test_collect_requires_positive_window(self):
+        self.write_pack(
+            r"""
+id: testpack.invalid_collect
+name: Invalid collected event
+source_family: test-family
+
+match:
+  regex: 'failure user=(?P<user>\S+)'
+
+aggregate:
+  threshold: 2
+  collect:
+    users:
+      field: user
+      distinct: true
+
+finding:
+  severity: warning
+  title: Invalid collection
+"""
+        )
+
+        engine = self.make_engine()
+
+        self.assertEqual(
+            engine.rules,
+            [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

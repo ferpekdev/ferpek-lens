@@ -23,6 +23,11 @@ class PackEngine:
         # rule/group -> timestamps
         self.occurrences = defaultdict(deque)
 
+        # rule/group -> collection name -> (timestamp, value)
+        self.collections = defaultdict(
+            lambda: defaultdict(deque)
+        )
+
         # rule/group -> timestamp
         self.last_finding = {}
 
@@ -53,6 +58,11 @@ class PackEngine:
 
         occurrences_data = data.get(
             "occurrences",
+            [],
+        )
+
+        collections_data = data.get(
+            "collections",
             [],
         )
 
@@ -124,6 +134,87 @@ class PackEngine:
             ):
                 continue
 
+        for item in collections_data:
+            try:
+                rule_id = item["rule_id"]
+
+                rule = rules_by_id.get(
+                    rule_id
+                )
+
+                if rule is None:
+                    continue
+
+                group_values = tuple(
+                    item.get(
+                        "group_values",
+                        [],
+                    )
+                )
+
+                collection_name = str(
+                    item["name"]
+                )
+
+                if (
+                    collection_name
+                    not in rule.get("_collect", {})
+                ):
+                    continue
+
+                values = []
+
+                for entry in item.get(
+                    "values",
+                    [],
+                ):
+                    timestamp = int(
+                        entry["timestamp"]
+                    )
+
+                    value = str(
+                        entry["value"]
+                    )
+
+                    values.append(
+                        (
+                            timestamp,
+                            value,
+                        )
+                    )
+
+                window = rule["_window"]
+
+                if window > 0:
+                    cutoff = now - window
+
+                    values = [
+                        entry
+                        for entry in values
+                        if entry[0] >= cutoff
+                    ]
+
+                if not values:
+                    continue
+
+                group_key = (
+                    rule_id,
+                    group_values,
+                )
+
+                self.collections[
+                    group_key
+                ][
+                    collection_name
+                ] = deque(values)
+
+            except (
+                KeyError,
+                TypeError,
+                ValueError,
+            ):
+                continue
+
         for item in last_finding_data:
             try:
                 rule_id = item["rule_id"]
@@ -173,6 +264,7 @@ class PackEngine:
 
         data = {
             "occurrences": [],
+            "collections": [],
             "last_finding": [],
         }
 
@@ -194,6 +286,31 @@ class PackEngine:
                     ),
                 }
             )
+
+        for (
+            rule_id,
+            group_values,
+        ), collections in self.collections.items():
+            for name, values in collections.items():
+                if not values:
+                    continue
+
+                data["collections"].append(
+                    {
+                        "rule_id": rule_id,
+                        "group_values": list(
+                            group_values
+                        ),
+                        "name": name,
+                        "values": [
+                            {
+                                "timestamp": timestamp,
+                                "value": value,
+                            }
+                            for timestamp, value in values
+                        ],
+                    }
+                )
 
         for (
             rule_id,
@@ -338,6 +455,94 @@ class PackEngine:
             {},
         )
 
+        if not isinstance(aggregate, dict):
+            raise ValueError(
+                f"{rule_id}: aggregate must be a mapping"
+            )
+
+        window = int(
+            aggregate.get(
+                "window_seconds",
+                0,
+            )
+        )
+
+        threshold = int(
+            aggregate.get(
+                "threshold",
+                1,
+            )
+        )
+
+        cooldown = int(
+            aggregate.get(
+                "cooldown_seconds",
+                0,
+            )
+        )
+
+        collect = aggregate.get(
+            "collect",
+            {},
+        )
+
+        if collect is None:
+            collect = {}
+
+        if not isinstance(collect, dict):
+            raise ValueError(
+                f"{rule_id}: aggregate.collect must be a mapping"
+            )
+
+        prepared_collect = {}
+
+        for collection_name, config in collect.items():
+            collection_name = str(
+                collection_name
+            ).strip()
+
+            if not collection_name:
+                raise ValueError(
+                    f"{rule_id}: aggregate.collect has an empty name"
+                )
+
+            if not isinstance(config, dict):
+                raise ValueError(
+                    f"{rule_id}: collect.{collection_name} "
+                    "must be a mapping"
+                )
+
+            field = str(
+                config.get(
+                    "field",
+                    "",
+                )
+            ).strip()
+
+            if not field:
+                raise ValueError(
+                    f"{rule_id}: collect.{collection_name}.field "
+                    "is required"
+                )
+
+            prepared_collect[
+                collection_name
+            ] = {
+                "field": field,
+                "distinct": bool(
+                    config.get(
+                        "distinct",
+                        False,
+                    )
+                ),
+            }
+
+        if prepared_collect and window <= 0:
+            raise ValueError(
+                f"{rule_id}: aggregate.collect requires "
+                "window_seconds > 0"
+            )
+
         prepared = {
             **rule,
             "_pack_id": manifest.get(
@@ -350,24 +555,10 @@ class PackEngine:
             ),
             "_rule_path": str(rule_path),
             "_regex": re.compile(pattern),
-            "_window": int(
-                aggregate.get(
-                    "window_seconds",
-                    0,
-                )
-            ),
-            "_threshold": int(
-                aggregate.get(
-                    "threshold",
-                    1,
-                )
-            ),
-            "_cooldown": int(
-                aggregate.get(
-                    "cooldown_seconds",
-                    0,
-                )
-            ),
+            "_window": window,
+            "_threshold": threshold,
+            "_cooldown": cooldown,
+            "_collect": prepared_collect,
         }
 
         self.rules.append(prepared)
@@ -551,6 +742,42 @@ class PackEngine:
 
         occurrences.append(timestamp)
 
+        collections = self.collections[
+            group_key
+        ]
+
+        for (
+            collection_name,
+            collection_config,
+        ) in rule.get(
+            "_collect",
+            {},
+        ).items():
+            field_name = collection_config[
+                "field"
+            ]
+
+            value = fields.get(
+                field_name
+            )
+
+            if value is None:
+                continue
+
+            value = str(value)
+
+            if not value:
+                continue
+
+            collections[
+                collection_name
+            ].append(
+                (
+                    timestamp,
+                    value,
+                )
+            )
+
         window = rule["_window"]
 
         if window > 0:
@@ -561,6 +788,13 @@ class PackEngine:
                 and occurrences[0] < cutoff
             ):
                 occurrences.popleft()
+
+            for values in collections.values():
+                while (
+                    values
+                    and values[0][0] < cutoff
+                ):
+                    values.popleft()
 
         self.state_dirty = True
 
@@ -609,6 +843,13 @@ class PackEngine:
                     template
                 )
 
+        collection_context = (
+            self._build_collection_context(
+                rule,
+                group_key,
+            )
+        )
+
         return {
             "pattern_id": rule["id"],
             "group_key": "|".join(
@@ -632,6 +873,7 @@ class PackEngine:
                 fields,
                 display_fields,
                 len(occurrences),
+                collection_context,
             ),
             "source_line": event.get(
                 "message",
@@ -639,12 +881,70 @@ class PackEngine:
             ),
         }
 
+    def _build_collection_context(
+        self,
+        rule,
+        group_key,
+    ):
+        context = {}
+
+        collections = self.collections.get(
+            group_key,
+            {},
+        )
+
+        for (
+            collection_name,
+            collection_config,
+        ) in rule.get(
+            "_collect",
+            {},
+        ).items():
+            entries = collections.get(
+                collection_name,
+                (),
+            )
+
+            values = [
+                value
+                for _, value in entries
+            ]
+
+            if collection_config.get(
+                "distinct",
+                False,
+            ):
+                seen = set()
+                distinct_values = []
+
+                for value in values:
+                    if value in seen:
+                        continue
+
+                    seen.add(value)
+                    distinct_values.append(
+                        value
+                    )
+
+                values = distinct_values
+
+            context[collection_name] = (
+                ", ".join(values)
+            )
+
+            context[
+                f"{collection_name}_count"
+            ] = len(values)
+
+        return context
+
     def _build_detail(
         self,
         rule,
         fields,
         display_fields,
         occurrence_count,
+        collection_context=None,
     ):
         finding_config = rule.get(
             "finding",
@@ -659,6 +959,10 @@ class PackEngine:
             context = {
                 **fields,
                 **display_fields,
+                **(
+                    collection_context
+                    or {}
+                ),
                 "count": occurrence_count,
             }
 
