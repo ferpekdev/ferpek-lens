@@ -9698,6 +9698,30 @@ function Settings({
   const lensUpdateObservedActiveRef =
     useRef(false)
 
+  function getLensUpdateButtonLabel(
+    phase: string | null | undefined,
+  ) {
+    switch (phase) {
+      case "preparing_backup":
+        return "Preparing..."
+      case "preparing_staging":
+        return "Preparing..."
+      case "applying_deployment":
+        return "Applying..."
+      case "pulling_images":
+        return "Downloading..."
+      case "starting_services":
+        return "Starting..."
+      case "verifying_health":
+        return "Verifying..."
+      case "verifying_version":
+        return "Verifying..."
+      default:
+        return "Updating..."
+    }
+  }
+
+
   function getLensUpdatePhaseLabel(
     phase: string | null | undefined,
   ) {
@@ -9855,7 +9879,7 @@ function Settings({
       () => {
         void loadLensUpdateStatus(true)
       },
-      2000,
+      250,
     )
 
     return () => {
@@ -9871,9 +9895,18 @@ function Settings({
 
       if (lensUpdateObservedActiveRef.current) {
         setLensUpdateMessage(
-          targetVersion
-            ? `FERPEK Lens was updated to v${targetVersion}.`
-            : "FERPEK Lens update completed successfully.",
+          "Update complete.",
+        )
+
+        window.setTimeout(
+          () => {
+            setLensUpdateMessage(
+              targetVersion
+                ? `FERPEK Lens was updated to v${targetVersion}.`
+                : "FERPEK Lens update completed successfully.",
+            )
+          },
+          1500,
         )
       } else {
         setLensUpdateMessage("")
@@ -10633,6 +10666,10 @@ function Settings({
                       lensUpdateStatus?.phase,
                     ) && (
                       <p className="settings-update-phase">
+                        <span
+                          className="settings-update-spinner"
+                          aria-hidden="true"
+                        />
                         {getLensUpdatePhaseLabel(
                           lensUpdateStatus?.phase,
                         )}
@@ -10701,7 +10738,9 @@ function Settings({
                           "starting" ||
                         lensUpdateStatus?.status ===
                           "running"
-                          ? "Updating..."
+                          ? getLensUpdateButtonLabel(
+                              lensUpdateStatus?.phase,
+                            )
                           : "Update"}
                       </button>
                     )}
