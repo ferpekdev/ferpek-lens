@@ -1644,8 +1644,8 @@ function Systems({
 
   async function copyCommand() {
     const command =
-      `curl -fsSL http://${window.location.hostname}:8000/install-agent.sh | ` +
-      `sudo bash -s -- --server http://${window.location.hostname}:8000 ` +
+      `curl -fsSL ${window.location.origin}/install-agent.sh | ` +
+      `sudo bash -s -- --server ${window.location.origin} ` +
       `--token ${enrollmentToken}`
 
     try {
@@ -1771,7 +1771,7 @@ function Systems({
   const seconds = expiresIn % 60
 
   const installCommand = enrollmentToken
-    ? `curl -fsSL http://${window.location.hostname}:8000/install-agent.sh | sudo bash -s -- --server http://${window.location.hostname}:8000 --token ${enrollmentToken}`
+    ? `curl -fsSL ${window.location.origin}/install-agent.sh | sudo bash -s -- --server ${window.location.origin} --token ${enrollmentToken}`
     : ''
 
   async function deleteHost() {
