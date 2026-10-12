@@ -908,6 +908,61 @@ finding:
             [],
         )
 
+    def test_first_finding_is_not_blocked_by_cooldown(self):
+        self.write_pack(
+            r"""
+id: testpack.first_cooldown
+name: First cooldown
+source_family: test-family
+
+match:
+  regex: 'failure ip=(?P<ip>\S+)'
+
+group_by:
+  - ip
+
+aggregate:
+  window_seconds: 3600
+  threshold: 3
+  cooldown_seconds: 3600
+
+finding:
+  severity: warning
+  title: Repeated failures
+  detail: "{count} failures."
+"""
+        )
+
+        engine = self.make_engine()
+
+        findings = []
+
+        for timestamp in (
+            1000,
+            1060,
+            1120,
+        ):
+            result = engine.process_event(
+                self.event(
+                    "failure ip=192.0.2.200",
+                    timestamp,
+                )
+            )
+
+            findings.extend(
+                result["findings"]
+            )
+
+        self.assertEqual(
+            len(findings),
+            1,
+        )
+
+        self.assertEqual(
+            findings[0]["pattern_id"],
+            "testpack.first_cooldown",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

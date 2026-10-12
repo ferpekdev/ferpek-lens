@@ -904,12 +904,12 @@ class PackEngine:
         cooldown = rule["_cooldown"]
 
         last_finding = self.last_finding.get(
-            group_key,
-            0,
+            group_key
         )
 
         if (
             cooldown > 0
+            and last_finding is not None
             and timestamp - last_finding
             < cooldown
         ):
