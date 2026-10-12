@@ -9644,6 +9644,7 @@ function Settings({
     useState("")
   const [updateResult, setUpdateResult] =
     useState<{
+      checked_at: number
       lens: {
         current_version: string
         latest_version: string | null
@@ -9861,6 +9862,7 @@ function Settings({
   useEffect(() => {
     void loadUpdateHelperStatus()
     void loadLensUpdateStatus()
+    void loadLastUpdateCheck()
   }, [])
 
 
@@ -10275,6 +10277,39 @@ function Settings({
   }
 
 
+  async function loadLastUpdateCheck() {
+    if (!hasPermission(currentUser, 'settings.view')) {
+      return
+    }
+
+    try {
+      const response = await fetch(
+        "/api/v1/updates/last-check",
+      )
+
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status}`,
+        )
+      }
+
+      const data = await response.json()
+
+      if (
+        data?.checked === true &&
+        data?.result
+      ) {
+        setUpdateResult(data.result)
+      }
+    } catch (error) {
+      console.error(
+        "Could not load last update check:",
+        error,
+      )
+    }
+  }
+
+
   async function checkForUpdates() {
     if (!hasPermission(currentUser, 'settings.view')) {
       return
@@ -10529,6 +10564,11 @@ function Settings({
                 <h2>Updates</h2>
                 <p>
                   Check FERPEK Lens and official packs for newer versions.
+                  {updateResult?.checked_at
+                    ? ` Last checked: ${new Date(
+                        updateResult.checked_at * 1000,
+                      ).toLocaleString()}.`
+                    : ""}
                 </p>
               </div>
 

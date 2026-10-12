@@ -2361,6 +2361,55 @@ def get_lens_update_status():
 
 
 @app.get(
+    "/api/v1/updates/last-check",
+    dependencies=[
+        Depends(
+            require_permission("settings.view")
+        )
+    ],
+)
+def get_last_update_check():
+    raw = get_setting_text(
+        "last_update_check",
+        "",
+    )
+
+    if not raw:
+        return {
+            "checked": False,
+            "result": None,
+        }
+
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError:
+        return {
+            "checked": False,
+            "result": None,
+        }
+
+    if not isinstance(result, dict):
+        return {
+            "checked": False,
+            "result": None,
+        }
+
+    checked_at = result.get("checked_at")
+
+    if not isinstance(checked_at, int):
+        return {
+            "checked": False,
+            "result": None,
+        }
+
+    return {
+        "checked": True,
+        "checked_at": checked_at,
+        "result": result,
+    }
+
+
+@app.get(
     "/api/v1/updates/check",
     dependencies=[
         Depends(
@@ -2448,6 +2497,19 @@ def check_for_updates():
     except HTTPException as exc:
         result["packs"]["error"] = str(
             exc.detail
+        )
+
+    now = int(time.time())
+
+    with db() as conn:
+        set_setting(
+            conn,
+            "last_update_check",
+            json.dumps(
+                result,
+                separators=(",", ":"),
+            ),
+            now,
         )
 
     return result
