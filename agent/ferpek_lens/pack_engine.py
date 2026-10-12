@@ -543,6 +543,82 @@ class PackEngine:
                 "window_seconds > 0"
             )
 
+        conditions = rule.get(
+            "conditions",
+            {},
+        )
+
+        if conditions is None:
+            conditions = {}
+
+        if not isinstance(conditions, dict):
+            raise ValueError(
+                f"{rule_id}: conditions must be a mapping"
+            )
+
+        valid_condition_keys = {
+            "count",
+            *(
+                f"{name}_count"
+                for name in prepared_collect
+            ),
+        }
+
+        valid_operators = {
+            "eq",
+            "ne",
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+        }
+
+        prepared_conditions = {}
+
+        for key, config in conditions.items():
+            key = str(key).strip()
+
+            if key not in valid_condition_keys:
+                raise ValueError(
+                    f"{rule_id}: unsupported condition key: {key}"
+                )
+
+            if not isinstance(config, dict):
+                raise ValueError(
+                    f"{rule_id}: condition {key} must be a mapping"
+                )
+
+            if len(config) != 1:
+                raise ValueError(
+                    f"{rule_id}: condition {key} must contain "
+                    "exactly one operator"
+                )
+
+            operator, expected = next(
+                iter(config.items())
+            )
+
+            operator = str(operator).strip()
+
+            if operator not in valid_operators:
+                raise ValueError(
+                    f"{rule_id}: unsupported condition operator: "
+                    f"{operator}"
+                )
+
+            try:
+                expected = int(expected)
+            except (TypeError, ValueError):
+                raise ValueError(
+                    f"{rule_id}: condition {key}.{operator} "
+                    "must be an integer"
+                )
+
+            prepared_conditions[key] = {
+                "operator": operator,
+                "value": expected,
+            }
+
         prepared = {
             **rule,
             "_pack_id": manifest.get(
@@ -559,6 +635,7 @@ class PackEngine:
             "_threshold": threshold,
             "_cooldown": cooldown,
             "_collect": prepared_collect,
+            "_conditions": prepared_conditions,
         }
 
         self.rules.append(prepared)
@@ -803,6 +880,24 @@ class PackEngine:
         if len(occurrences) < threshold:
             return None
 
+        collection_context = (
+            self._build_collection_context(
+                rule,
+                group_key,
+            )
+        )
+
+        condition_context = {
+            "count": len(occurrences),
+            **collection_context,
+        }
+
+        if not self._conditions_match(
+            rule,
+            condition_context,
+        ):
+            return None
+
         cooldown = rule["_cooldown"]
 
         last_finding = self.last_finding.get(
@@ -843,13 +938,6 @@ class PackEngine:
                     template
                 )
 
-        collection_context = (
-            self._build_collection_context(
-                rule,
-                group_key,
-            )
-        )
-
         return {
             "pattern_id": rule["id"],
             "group_key": "|".join(
@@ -880,6 +968,52 @@ class PackEngine:
                 "",
             ),
         }
+
+    def _conditions_match(
+        self,
+        rule,
+        context,
+    ):
+        operators = {
+            "eq": lambda actual, expected: actual == expected,
+            "ne": lambda actual, expected: actual != expected,
+            "gt": lambda actual, expected: actual > expected,
+            "gte": lambda actual, expected: actual >= expected,
+            "lt": lambda actual, expected: actual < expected,
+            "lte": lambda actual, expected: actual <= expected,
+        }
+
+        for key, config in rule.get(
+            "_conditions",
+            {},
+        ).items():
+            actual = context.get(
+                key
+            )
+
+            if not isinstance(
+                actual,
+                int,
+            ):
+                return False
+
+            operator = config[
+                "operator"
+            ]
+
+            expected = config[
+                "value"
+            ]
+
+            if not operators[
+                operator
+            ](
+                actual,
+                expected,
+            ):
+                return False
+
+        return True
 
     def _build_collection_context(
         self,

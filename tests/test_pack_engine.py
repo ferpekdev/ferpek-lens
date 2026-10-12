@@ -697,6 +697,208 @@ finding:
             [],
         )
 
+    def test_condition_on_distinct_collection_count(self):
+        self.write_pack(
+            r"""
+id: testpack.enumeration
+name: Enumeration
+source_family: test-family
+
+match:
+  regex: 'failure user=(?P<user>\S+) ip=(?P<ip>\S+)'
+
+group_by:
+  - ip
+
+aggregate:
+  window_seconds: 300
+  threshold: 3
+  collect:
+    users:
+      field: user
+      distinct: true
+
+conditions:
+  users_count:
+    gte: 3
+
+finding:
+  severity: warning
+  title: Enumeration detected
+  detail: "{count} failures targeting {users_count} users: {users}."
+"""
+        )
+
+        engine = self.make_engine()
+
+        engine.process_event(
+            self.event(
+                "failure user=root ip=192.0.2.90",
+                1000,
+            )
+        )
+        engine.process_event(
+            self.event(
+                "failure user=admin ip=192.0.2.90",
+                1010,
+            )
+        )
+
+        result = engine.process_event(
+            self.event(
+                "failure user=postgres ip=192.0.2.90",
+                1020,
+            )
+        )
+
+        self.assertEqual(
+            len(result["findings"]),
+            1,
+        )
+
+    def test_condition_prevents_finding_when_not_met(self):
+        self.write_pack(
+            r"""
+id: testpack.not_enumeration
+name: Not enumeration
+source_family: test-family
+
+match:
+  regex: 'failure user=(?P<user>\S+) ip=(?P<ip>\S+)'
+
+group_by:
+  - ip
+
+aggregate:
+  window_seconds: 300
+  threshold: 3
+  collect:
+    users:
+      field: user
+      distinct: true
+
+conditions:
+  users_count:
+    gte: 3
+
+finding:
+  severity: warning
+  title: Enumeration detected
+"""
+        )
+
+        engine = self.make_engine()
+
+        for timestamp in (
+            1000,
+            1010,
+            1020,
+        ):
+            result = engine.process_event(
+                self.event(
+                    "failure user=root ip=192.0.2.91",
+                    timestamp,
+                )
+            )
+
+        self.assertEqual(
+            result["findings"],
+            [],
+        )
+
+    def test_condition_can_use_occurrence_count(self):
+        self.write_pack(
+            r"""
+id: testpack.count_condition
+name: Count condition
+source_family: test-family
+
+match:
+  regex: 'failure ip=(?P<ip>\S+)'
+
+group_by:
+  - ip
+
+aggregate:
+  window_seconds: 300
+  threshold: 2
+
+conditions:
+  count:
+    gte: 4
+
+finding:
+  severity: warning
+  title: High failure count
+  detail: "{count} failures."
+"""
+        )
+
+        engine = self.make_engine()
+
+        for timestamp in (
+            1000,
+            1010,
+            1020,
+        ):
+            result = engine.process_event(
+                self.event(
+                    "failure ip=192.0.2.92",
+                    timestamp,
+                )
+            )
+
+        self.assertEqual(
+            result["findings"],
+            [],
+        )
+
+        result = engine.process_event(
+            self.event(
+                "failure ip=192.0.2.92",
+                1030,
+            )
+        )
+
+        self.assertEqual(
+            len(result["findings"]),
+            1,
+        )
+
+    def test_invalid_condition_key_is_rejected(self):
+        self.write_pack(
+            r"""
+id: testpack.invalid_condition
+name: Invalid condition
+source_family: test-family
+
+match:
+  regex: 'failure user=(?P<user>\S+)'
+
+aggregate:
+  window_seconds: 300
+  collect:
+    users:
+      field: user
+      distinct: true
+
+conditions:
+  unknown_count:
+    gte: 2
+
+finding:
+  severity: warning
+  title: Invalid
+"""
+        )
+
+        engine = self.make_engine()
+
+        self.assertEqual(
+            engine.rules,
+            [],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
