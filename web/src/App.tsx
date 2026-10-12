@@ -10495,63 +10495,6 @@ function Settings({
                 </div>
               </div>
 
-              {hasPermission(currentUser, 'settings.view') && (
-                <>
-                  <div className="settings-list-row settings-navigation-row">
-                    <div>
-                      <h3>Server</h3>
-                      <p>
-                        Server identity, URL and connectivity settings.
-                      </p>
-                    </div>
-
-                    {hasPermission(
-                      currentUser,
-                      'settings.manage',
-                    ) && (
-                      <span className="settings-row-arrow">
-                        ›
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="settings-list-row settings-navigation-row">
-                    <div>
-                      <h3>Agents</h3>
-                      <p>
-                        Enrollment and agent configuration.
-                      </p>
-                    </div>
-
-                    {hasPermission(
-                      currentUser,
-                      'settings.manage',
-                    ) && (
-                      <span className="settings-row-arrow">
-                        ›
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="settings-list-row settings-navigation-row">
-                    <div>
-                      <h3>Detection</h3>
-                      <p>
-                        Patterns and finding behaviour.
-                      </p>
-                    </div>
-
-                    {hasPermission(
-                      currentUser,
-                      'settings.manage',
-                    ) && (
-                      <span className="settings-row-arrow">
-                        ›
-                      </span>
-                    )}
-                  </div>
-                </>
-              )}
             </div>
           </div>
 
@@ -10579,6 +10522,17 @@ function Settings({
                     <p>
                       Core server and web application.
                     </p>
+
+                    {updateResult?.lens?.release_url && (
+                      <a
+                        className="settings-release-link"
+                        href={updateResult.lens.release_url}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        View release notes ↗
+                      </a>
+                    )}
                   </div>
 
                   <div className="settings-update-values">
