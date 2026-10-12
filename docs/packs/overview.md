@@ -14,6 +14,10 @@ A pack can describe:
 
 Packs are designed to keep service-specific knowledge outside the core agent wherever possible.
 
+Pack compatibility is versioned independently across the FERPEK Lens Server, Agent and Pack Engine. Packs that require newer rule-language capabilities can declare a minimum `pack_engine` version and are not distributed to incompatible agents.
+
+See **Pack development** for the current pack rule and compatibility model.
+
 ## Official packs
 
 Official FERPEK Lens packs are maintained separately in the `ferpek-lens-packs` repository.
