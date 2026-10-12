@@ -633,7 +633,6 @@ class PackEngine:
                 display_fields,
                 len(occurrences),
             ),
-            "suggest": "",
             "source_line": event.get(
                 "message",
                 "",
