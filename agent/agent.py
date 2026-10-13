@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 
+import fnmatch
+import glob
 import hashlib
 import json
 import re
@@ -854,11 +856,24 @@ def refresh_dynamic_journal_sources(
     return mappings
 
 
+def runtime_source_key(source):
+    runtime_key = str(
+        source.get("runtime_key", "")
+    ).strip()
+
+    if runtime_key:
+        return runtime_key
+
+    return str(
+        source.get("source_key", "")
+    ).strip()
+
+
 def pack_runtime_sources_by_key(
     runtime_sources,
 ):
     return {
-        source["source_key"]: source
+        runtime_source_key(source): source
         for source in runtime_sources
         if (
             isinstance(source, dict)
@@ -866,6 +881,44 @@ def pack_runtime_sources_by_key(
             and source.get("enabled", True)
         )
     }
+
+
+def source_config_for_event(
+    enabled_sources,
+    event,
+):
+    runtime_key = str(
+        event.get("_runtime_key", "")
+    ).strip()
+
+    if runtime_key:
+        source = enabled_sources.get(
+            runtime_key
+        )
+
+        if source is not None:
+            return source
+
+    source_key = str(
+        event.get("source_key", "")
+    ).strip()
+
+    source = enabled_sources.get(
+        source_key
+    )
+
+    if source is not None:
+        return source
+
+    for source in enabled_sources.values():
+        if (
+            isinstance(source, dict)
+            and source.get("source_key")
+            == source_key
+        ):
+            return source
+
+    return None
 
 
 SOURCE_FAMILIES = {
@@ -1123,6 +1176,97 @@ def journal_unit_exists(unit: str) -> bool:
     }
 
 
+def journal_units_matching(pattern: str):
+    pattern = str(pattern).strip()
+
+    if not pattern:
+        return []
+
+    if not any(char in pattern for char in "*?["):
+        return (
+            [pattern]
+            if journal_unit_exists(pattern)
+            else []
+        )
+
+    units = set()
+
+    commands = (
+        [
+            "systemctl",
+            "list-unit-files",
+            "--type=service",
+            "--all",
+            "--no-legend",
+            "--no-pager",
+        ],
+        [
+            "systemctl",
+            "list-units",
+            "--type=service",
+            "--all",
+            "--no-legend",
+            "--no-pager",
+        ],
+    )
+
+    for command in commands:
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+        except (
+            OSError,
+            subprocess.SubprocessError,
+        ):
+            continue
+
+        if result.returncode != 0:
+            continue
+
+        for line in result.stdout.splitlines():
+            parts = line.split()
+
+            if not parts:
+                continue
+
+            unit = parts[0].strip()
+
+            if (
+                unit.endswith(".service")
+                and fnmatch.fnmatchcase(
+                    unit,
+                    pattern,
+                )
+            ):
+                units.add(unit)
+
+    return sorted(units)
+
+
+def file_paths_matching(pattern: str):
+    pattern = str(pattern).strip()
+
+    if not pattern:
+        return []
+
+    if glob.has_magic(pattern):
+        candidates = sorted(
+            glob.glob(pattern)
+        )
+    else:
+        candidates = [pattern]
+
+    return [
+        str(Path(candidate))
+        for candidate in candidates
+        if Path(candidate).is_file()
+    ]
+
+
 def discover_pack_source(source: dict):
     source_id = str(
         source.get("id", "")
@@ -1133,6 +1277,7 @@ def discover_pack_source(source: dict):
         "detected": False,
         "source_type": "",
         "source_value": "",
+        "source_values": [],
     }
 
     discovery = source.get(
@@ -1151,49 +1296,45 @@ def discover_pack_source(source: dict):
             candidate.get("type", "")
         ).strip().lower()
 
+        values = []
+
         if candidate_type == "journal":
-            for unit in candidate.get(
+            for unit_pattern in candidate.get(
                 "units",
                 [],
             ):
-                unit = str(unit).strip()
-
-                if not unit:
-                    continue
-
-                if journal_unit_exists(unit):
-                    result.update(
-                        {
-                            "detected": True,
-                            "source_type": "journal",
-                            "source_value": unit,
-                        }
+                values.extend(
+                    journal_units_matching(
+                        unit_pattern
                     )
+                )
 
-                    return result
-
-        if candidate_type == "file":
-            for file_path in candidate.get(
+        elif candidate_type == "file":
+            for path_pattern in candidate.get(
                 "paths",
                 [],
             ):
-                file_path = str(
-                    file_path
-                ).strip()
-
-                if not file_path:
-                    continue
-
-                if Path(file_path).is_file():
-                    result.update(
-                        {
-                            "detected": True,
-                            "source_type": "file",
-                            "source_value": file_path,
-                        }
+                values.extend(
+                    file_paths_matching(
+                        path_pattern
                     )
+                )
 
-                    return result
+        values = list(
+            dict.fromkeys(values)
+        )
+
+        if values:
+            result.update(
+                {
+                    "detected": True,
+                    "source_type": candidate_type,
+                    "source_value": values[0],
+                    "source_values": values,
+                }
+            )
+
+            return result
 
     return result
 
@@ -1948,7 +2089,11 @@ def initialize_file_offset(
 
     offset = stat.st_size if start_at_end else 0
 
-    states[source["source_key"]] = {
+    state_key = runtime_source_key(
+        source
+    )
+
+    states[state_key] = {
         "path": str(path),
         "inode": stat.st_ino,
         "offset": offset,
@@ -2006,6 +2151,9 @@ def normalize_file_event(source, line):
 
     return {
         "source_key": source["source_key"],
+        "_runtime_key": runtime_source_key(
+            source
+        ),
         "source_family": source_family(source["source_key"]),
         "timestamp": int(time.time()),
         "service": source["source_key"],
@@ -2038,13 +2186,16 @@ def poll_file_sources(
 
         path = Path(path_value)
         source_key = source["source_key"]
+        state_key = runtime_source_key(
+            source
+        )
 
         try:
             stat = path.stat()
         except OSError:
             continue
 
-        state = states.get(source_key)
+        state = states.get(state_key)
 
         if state is None:
             initialize_file_offset(
@@ -2067,7 +2218,7 @@ def poll_file_sources(
                 "offset": 0,
             }
 
-            states[source_key] = state
+            states[state_key] = state
             changed = True
 
         offset = int(
@@ -2111,7 +2262,7 @@ def poll_file_sources(
 
                     if event is not None:
                         event_id = file_event_id(
-                            source_key,
+                            state_key,
                             stat.st_ino,
                             line_offset,
                         )
@@ -2721,8 +2872,9 @@ def main():
                     timeout=0.5,
                 )
 
-                source_config = enabled_sources.get(
-                    event["source_key"]
+                source_config = source_config_for_event(
+                    enabled_sources,
+                    event,
                 )
 
                 if source_config:

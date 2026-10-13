@@ -576,12 +576,26 @@ def init_db():
                 detected INTEGER NOT NULL DEFAULT 0,
                 source_type TEXT NOT NULL DEFAULT '',
                 source_value TEXT NOT NULL DEFAULT '',
+                source_values TEXT NOT NULL DEFAULT '[]',
                 checked_at INTEGER NOT NULL,
                 PRIMARY KEY(agent_id, pack_id, source_id),
                 FOREIGN KEY(agent_id) REFERENCES agents(id)
                     ON DELETE CASCADE
             )
         """)
+
+        if not column_exists(
+            conn,
+            "agent_pack_source_discovery",
+            "source_values",
+        ):
+            conn.execute(
+                """
+                ALTER TABLE agent_pack_source_discovery
+                ADD COLUMN source_values TEXT
+                NOT NULL DEFAULT '[]'
+                """
+            )
 
         conn.execute("""
             CREATE TABLE IF NOT EXISTS events (
@@ -1327,6 +1341,10 @@ class AgentPackSourceDiscoveryResult(BaseModel):
     detected: bool
     source_type: str = ""
     source_value: str = ""
+    source_values: list[str] = Field(
+        default_factory=list,
+        max_length=100,
+    )
 
 
 class AgentPackDiscoveryResult(BaseModel):
@@ -9654,9 +9672,10 @@ def report_agent_pack_discovery(
                             detected,
                             source_type,
                             source_value,
+                            source_values,
                             checked_at
                         )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         agent["id"],
@@ -9665,6 +9684,17 @@ def report_agent_pack_discovery(
                         int(source.detected),
                         source.source_type.strip(),
                         source.source_value.strip(),
+                        json.dumps(
+                            (
+                                source.source_values
+                                or (
+                                    [source.source_value]
+                                    if source.source_value
+                                    else []
+                                )
+                            ),
+                            separators=(",", ":"),
+                        ),
                         now,
                     ),
                 )
@@ -9672,6 +9702,73 @@ def report_agent_pack_discovery(
     return {
         "received": len(batch.packs),
     }
+
+
+def build_discovered_runtime_sources(
+    source_id: str,
+    source_name: str,
+    source_type: str,
+    source_value: str,
+    source_values,
+):
+    if not isinstance(source_values, list):
+        source_values = []
+
+    values = list(
+        dict.fromkeys(
+            str(value).strip()
+            for value in source_values
+            if str(value).strip()
+        )
+    )
+
+    # Compatibility with discovery rows written by
+    # older Agents or before source_values existed.
+    if not values and source_value:
+        values = [
+            str(source_value).strip()
+        ]
+
+    runtime_sources = []
+
+    for value in values:
+        runtime_key = (
+            f"{source_id}::"
+            f"{source_type}::{value}"
+        )
+
+        if source_type == "journal":
+            runtime_sources.append(
+                {
+                    "runtime_key": runtime_key,
+                    "source_key": source_id,
+                    "name": source_name,
+                    "source_type": "journal",
+                    "path": None,
+                    "unit": value,
+                    "enabled": True,
+                    "send_events": True,
+                    "discovered": True,
+                }
+            )
+
+        elif source_type == "file":
+            runtime_sources.append(
+                {
+                    "runtime_key": runtime_key,
+                    "source_key": source_id,
+                    "name": source_name,
+                    "source_type": "file",
+                    "path": value,
+                    "unit": None,
+                    "enabled": True,
+                    "send_events": True,
+                    "discovered": True,
+                }
+            )
+
+    return runtime_sources
+
 
 
 @app.get("/api/v1/agent/packs")
@@ -9900,6 +9997,7 @@ def get_agent_packs(agent=Depends(get_agent)):
             )
 
             runtime_source = None
+            discovered_runtime_sources = []
 
             if (
                 discovery_row is not None
@@ -9915,29 +10013,27 @@ def get_agent_packs(agent=Depends(get_agent)):
                     or ""
                 ).strip()
 
-                if source_type == "journal":
-                    runtime_source = {
-                        "source_key": source_id,
-                        "name": source_name,
-                        "source_type": "journal",
-                        "path": None,
-                        "unit": source_value,
-                        "enabled": True,
-                        "send_events": True,
-                        "discovered": True,
-                    }
+                try:
+                    source_values = json.loads(
+                        discovery_row["source_values"]
+                        or "[]"
+                    )
+                except (
+                    TypeError,
+                    ValueError,
+                    json.JSONDecodeError,
+                ):
+                    source_values = []
 
-                elif source_type == "file":
-                    runtime_source = {
-                        "source_key": source_id,
-                        "name": source_name,
-                        "source_type": "file",
-                        "path": source_value,
-                        "unit": None,
-                        "enabled": True,
-                        "send_events": True,
-                        "discovered": True,
-                    }
+                discovered_runtime_sources = (
+                    build_discovered_runtime_sources(
+                        source_id,
+                        source_name,
+                        source_type,
+                        source_value,
+                        source_values,
+                    )
+                )
 
             elif is_pack_source_manual_config_valid(
                 source,
@@ -10013,7 +10109,11 @@ def get_agent_packs(agent=Depends(get_agent)):
 
                     break
 
-            if runtime_source is not None:
+            if discovered_runtime_sources:
+                runtime_sources.extend(
+                    discovered_runtime_sources
+                )
+            elif runtime_source is not None:
                 runtime_sources.append(
                     runtime_source
                 )
